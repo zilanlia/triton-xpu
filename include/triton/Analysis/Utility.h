@@ -155,6 +155,10 @@ template <typename Int> Int product(llvm::ArrayRef<Int> arr) {
   return std::accumulate(arr.begin(), arr.end(), 1, std::multiplies{});
 }
 
+template <typename Int> Int product_interval(llvm::ArrayRef<Int> arr, int i, int j) {
+  return std::accumulate(arr.begin() + i, arr.begin() + j, 1, std::multiplies{});
+}
+
 template <typename Int> Int ceil(Int m, Int n) { return (m + n - 1) / n; }
 
 /// output[i] = input[order[i]]

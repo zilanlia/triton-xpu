@@ -1,0 +1,20 @@
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+set(LLVM_TARGET_DEFINITIONS XeGPUOps.td)
+mlir_tablegen(XeGPUOpsDialect.h.inc -gen-dialect-decls -dialect=xegpu)
+mlir_tablegen(XeGPUOpsDialect.cpp.inc -gen-dialect-defs -dialect=xegpu)
+mlir_tablegen(XeGPUOps.h.inc -gen-op-decls)
+mlir_tablegen(XeGPUOps.cpp.inc -gen-op-defs)
+mlir_tablegen(XeGPUOpsTypes.h.inc -gen-typedef-decls -typedefs-dialect=xegpu)
+mlir_tablegen(XeGPUOpsTypes.cpp.inc -gen-typedef-defs -typedefs-dialect=xegpu)
+
+add_mlir_doc(XeGPUDialect XeGPUDialect dialects/ -gen-dialect-doc -dialect=xegpu)
+add_mlir_doc(XeGPUOps XeGPUOps dialects/ -gen-op-doc)
+add_public_tablegen_target(XeGPUTableGen)
+
+set(LLVM_TARGET_DEFINITIONS XeGPUAttrs.td)
+mlir_tablegen(XeGPUOpsAttrs.h.inc -gen-attrdef-decls)
+mlir_tablegen(XeGPUOpsAttrs.cpp.inc -gen-attrdef-defs)
+mlir_tablegen(XeGPUOpsEnums.h.inc -gen-enum-decls)
+mlir_tablegen(XeGPUOpsEnums.cpp.inc -gen-enum-defs)
+add_public_tablegen_target(XeGPUOpsAttrsIncGen)

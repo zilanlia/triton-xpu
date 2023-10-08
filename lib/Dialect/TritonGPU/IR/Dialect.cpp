@@ -41,6 +41,9 @@ unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
                                 Type eltTy) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     return blockedLayout.getTotalElemsPerThread(shape, eltTy);
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    //todo
+    return 1;
   } else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>()) {
     return sliceLayout.getTotalElemsPerThread(shape, eltTy);
   } else if (auto mmaLayout = layout.dyn_cast<MmaEncodingAttr>()) {
@@ -1029,6 +1032,86 @@ void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
           << ", CTAsPerCGA = [" << getCTALayout().getCTAsPerCGA() << "]"
           << ", CTASplitNum = [" << getCTALayout().getCTASplitNum() << "]"
           << ", CTAOrder = [" << getCTALayout().getCTAOrder() << "]"
+          << "}>";
+}
+
+//===----------------------------------------------------------------------===//
+// Generic Encoding
+//===----------------------------------------------------------------------===//
+
+Attribute GenericEncodingAttr::parse(AsmParser &parser, Type type) {
+  if (parser.parseLess().failed())
+    return {};
+  // Parse the data as a dictionary
+  DictionaryAttr dict;
+  if (parser.parseAttribute(dict).failed())
+    return {};
+  if (parser.parseGreater().failed())
+    return {};
+
+  SmallVector<unsigned> threadShape;
+  SmallVector<unsigned> threadStride;
+  SmallVector<unsigned> elemPerThread;
+  SmallVector<unsigned> elemStride;
+  SmallVector<unsigned> subGroupShape;
+  SmallVector<unsigned> order;
+  unsigned isLayoutUpdated;
+
+  for (const NamedAttribute &attr : dict) {
+    if (attr.getName() == "threadShape") {
+      if (parseIntArrayAttr(parser, attr, threadShape,
+                            "shape of the thread layout")
+              .failed())
+        return {};
+    } else if (attr.getName() == "threadStride") {
+      if (parseIntArrayAttr(parser, attr, threadStride,
+                            "Interval between adjacent threads")
+              .failed())
+        return {};
+    } else if (attr.getName() == "elemPerThread") {
+      if (parseIntArrayAttr(parser, attr, elemPerThread,
+                            "the elements each thread needs to process")
+              .failed())
+        return {};
+    } else if (attr.getName() == "elemStride") {
+      if (parseIntArrayAttr(parser, attr, elemStride, 
+                            "Interval between adjacent elements")
+              .failed())
+        return {};
+    } else if (attr.getName() == "subGroupShape") {
+      if (parseIntArrayAttr(parser, attr, subGroupShape, 
+                            "shape of the subGroup layout")
+              .failed())
+        return {};
+    } else if (attr.getName() == "order") {
+      if (parseIntArrayAttr(parser, attr, order, "order").failed())
+        return {};
+    } else if (attr.getName() == "isLayoutUpdated") {
+      if (parseIntAttrValue(parser, attr.getValue(), isLayoutUpdated, 
+                            "Indicates whether the layout has been propagated")
+              .failed())
+        return 0;
+    } else {
+      parser.emitError(parser.getNameLoc(), "unexpected key: ")
+          << attr.getName().strref();
+      return {};
+    }
+  }
+
+  auto ret = parser.getChecked<GenericEncodingAttr>(
+      parser.getContext(), threadShape, threadStride, elemPerThread, elemStride, subGroupShape, order, isLayoutUpdated);
+  return ret;
+}
+
+void GenericEncodingAttr::print(mlir::AsmPrinter &printer) const {
+  printer << "<{"
+          << "threadShape = [" << getThreadShape() << "]"
+          << ", threadStride = [" << getThreadStride() << "]"
+          << ", elemPerThread = [" << getElemPerThread() << "]"
+          << ", elemStride = [" << getElemStride() << "]"
+          << ", subGroupShape = [" << getSubGroupShape() << "]"
+          << ", order = [" << getOrder() << "]"
+          << ", isLayoutUpdated = "<< getIsLayoutUpdated()
           << "}>";
 }
 
