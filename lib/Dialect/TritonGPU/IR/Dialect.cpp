@@ -396,6 +396,10 @@ SmallVector<unsigned> getOrder(Attribute layout) {
 CTALayoutAttr getCTALayout(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>())
     return blockedLayout.getCTALayout();
+  else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) //todo
+    return CTALayoutAttr::get(layout.getContext(), genericLayout.getSubGroupShape(),
+                              genericLayout.getSubGroupShape(),
+                              genericLayout.getOrder());
   else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>())
     return CTALayoutAttr::get(layout.getContext(), getCTAsPerCGA(sliceLayout),
                               getCTASplitNum(sliceLayout),
@@ -455,6 +459,10 @@ SmallVector<unsigned> getCTASplitNum(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     res.assign(blockedLayout.getCTALayout().getCTASplitNum().begin(),
                blockedLayout.getCTALayout().getCTASplitNum().end());
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    //todo
+    res.assign(genericLayout.getSubGroupShape().begin(),
+               genericLayout.getSubGroupShape().end());
   } else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>()) {
     res = getCTASplitNum(sliceLayout.getParent());
     res.erase(res.begin() + sliceLayout.getDim());
@@ -1500,6 +1508,9 @@ public:
       return AliasResult::FinalAlias;
     } else if (auto blockedAttr = attr.dyn_cast<BlockedEncodingAttr>()) {
       os << "blocked";
+      return AliasResult::FinalAlias;
+    } else if (auto genericAttr = attr.dyn_cast<GenericEncodingAttr>()) {
+      os << "generic";
       return AliasResult::FinalAlias;
     } /* else if (auto sliceAttr = attr.dyn_cast<SliceEncodingAttr>()) {
       os << "slice";

@@ -57,6 +57,7 @@ public:
   explicit TritonXeGPUFuncConversionTarget(MLIRContext &ctx, TritonGPUToXeGPUTypeConverter& typeConverter)
           : ConversionTarget(ctx) {
     addIllegalOp<mlir::func::FuncOp>();
+    addIllegalOp<mlir::triton::FuncOp>();
     addLegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::gpu::GPUFuncOp>();
     addLegalOp<mlir::gpu::GPUModuleOp>();
@@ -64,13 +65,13 @@ public:
   }
 };
 
-struct XeGPUFuncOpConversion : public OpConversionPattern<func::FuncOp> {
+struct XeGPUFuncOpConversion : public OpConversionPattern<triton::FuncOp> {
   XeGPUFuncOpConversion(TritonGPUToXeGPUTypeConverter &converter, MLIRContext *context, int numWarps,
                    PatternBenefit benefit)
-      : OpConversionPattern<func::FuncOp>(converter, context, benefit), numWarps(numWarps) {}
+      : OpConversionPattern<triton::FuncOp>(converter, context, benefit), numWarps(numWarps) {}
 
   LogicalResult
-  matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
+  matchAndRewrite(triton::FuncOp funcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     ModuleOp mod = dyn_cast<ModuleOp>(funcOp->getParentOp());
 
@@ -106,7 +107,6 @@ struct XeGPUFuncOpConversion : public OpConversionPattern<func::FuncOp> {
     rewriter.setInsertionPointToStart(gpuModule.getBody());
     auto newFuncOp = rewriter.create<mlir::gpu::GPUFuncOp>(
             rewriter.getUnknownLoc(), funcOp.getName(),
-            //funcOp.getLoc(), funcOp.getName(),
             rewriter.getFunctionType(signatureConverter.getConvertedTypes(),
                                      resultType ? TypeRange(resultType)
                                                 : TypeRange()));
@@ -221,9 +221,9 @@ void TritonGPUToXeGPUPass::runOnOperation() {
       return signalPassFailure();
   }
 
-  llvm::outs()<<"\nAfter Conversion TritonGPUModule\n\n";
-  tritonGPUModule->print(llvm::outs());
-  llvm::outs()<<"\n\n";
+  // llvm::outs()<<"\nAfter Conversion TritonGPUModule\n\n";
+  // tritonGPUModule->print(llvm::outs());
+  // llvm::outs()<<"\n\n";
 };
 
 namespace mlir {

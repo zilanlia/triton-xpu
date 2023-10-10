@@ -73,12 +73,12 @@ public:
   }
 };
 
-class ReturnOpToXeGPUPattern : public OpConversionPattern<func::ReturnOp> {
+class ReturnOpToXeGPUPattern : public OpConversionPattern<triton::ReturnOp> {
 public:
-  using OpConversionPattern<func::ReturnOp>::OpConversionPattern;
+  using OpConversionPattern<triton::ReturnOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(func::ReturnOp op, OpAdaptor adaptor,
+  matchAndRewrite(triton::ReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     rewriter.create<mlir::gpu::ReturnOp>(loc);
@@ -170,14 +170,15 @@ public:
     auto type = mlir::VectorType::get(sgSize, i32Type);
 
     //segmentation fault
-    Value sgAddrs = rewriter.create<vector::SplatOp>(loc, type, sgAddr);
+    //Value sgAddrs = rewriter.create<vector::SplatOp>(loc, type, sgAddr);
 
     //avoid spirv.CompositeConstruct
-    // DenseElementsAttr constData = DenseElementsAttr::get(v32i32Type, ArrayRef<int>(std::vector<int>(32,0)));
-    // Value sgAddrs = rewriter.create<spirv::ConstantOp>(loc, v32i32Type, constData);
-    // for(int i=0;i<32;i++){
-    //   sgAddrs = rewriter.create<spirv::VectorInsertDynamicOp>(loc, v32i32Type, sgAddrs, sgAddr, i32_val(i));
-    // }
+    DenseElementsAttr constData = DenseElementsAttr::get(v32i32Type, ArrayRef<int>(std::vector<int>(32,0)));
+    Value sgAddrs = rewriter.create<spirv::ConstantOp>(loc, v32i32Type, constData);
+    for(int i = 0; i < 32; i++){
+      Value idx = rewriter.create<spirv::ConstantOp>(loc, i32Type, IntegerAttr::get(i32Type, i));
+      sgAddrs = rewriter.create<spirv::VectorInsertDynamicOp>(loc, v32i32Type, sgAddrs, sgAddr, idx);
+    }
 
     llvm::outs()<<"\n\nsgAddrs: "<<sgAddrs<<"\n";
     std::vector<int> values(sgSize, 0);
@@ -319,7 +320,7 @@ public:
     auto tensorTy = op.getResult().getType().cast<RankedTensorType>();
     auto tensorShape = tensorTy.getShape();
     auto elemType = tensorTy.getElementType();
-    auto layout = tensorTy.getEncoding().cast<GenericEncodingAttr>();
+    auto layout = tensorTy.getEncoding().dyn_cast<GenericEncodingAttr>();
 
     auto module = op.getOperation()->getParentOfType<ModuleOp>();
     int sgSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
@@ -328,14 +329,15 @@ public:
     auto newType = mlir::VectorType::get(sgSize, elemType);
 
     // Segmentation fault
-    Value ret = rewriter.create<vector::SplatOp>(loc, newType, src);
+    // Value ret = rewriter.create<vector::SplatOp>(loc, newType, src);
 
-    //avoid spirv.CompositeConstruct
-    // DenseElementsAttr constData = DenseElementsAttr::get(v32i32Type, ArrayRef<int>(std::vector<int>(32,0)));
-    // Value ret = rewriter.create<spirv::ConstantOp>(loc, v32i32Type, constData);
-    // for(int i=0;i<32;i++){
-    //   ret = rewriter.create<spirv::VectorInsertDynamicOp>(loc, v32i32Type, ret, src, i32_val(i));
-    // }
+    // avoid spirv.CompositeConstruct
+    DenseElementsAttr constData = DenseElementsAttr::get(v32i32Type, ArrayRef<int>(std::vector<int>(32,0)));
+    Value ret = rewriter.create<spirv::ConstantOp>(loc, v32i32Type, constData);
+    for(int i = 0; i < 32; i++){
+      Value idx = rewriter.create<spirv::ConstantOp>(loc, i32Type, IntegerAttr::get(i32Type, i));
+      ret = rewriter.create<spirv::VectorInsertDynamicOp>(loc, v32i32Type, ret, src, idx);
+    }
 
     rewriter.replaceOp(op, ret);
     return success();

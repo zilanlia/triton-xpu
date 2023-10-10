@@ -874,8 +874,12 @@ void init_triton_ir(py::module &&m) {
                    mlir::NamedAttribute(
                        self.getBuilder().getStringAttr("noinline"),
                        self.getBuilder().getBoolAttr(noinline))};
-               return self.create<mlir::triton::FuncOp>(funcName, funcTy,
-                                                        attrs);
+              //  return self.create<mlir::triton::FuncOp>(funcName, funcTy,
+              //                                           attrs);
+               mlir::triton::FuncOp funcOp = self.create<mlir::triton::FuncOp>(funcName, funcTy,
+                                                       attrs);
+               funcOp->setAttr("VectorComputeFunctionINTEL", self.getBuilder().getUnitAttr());
+               return funcOp;
              }
              throw std::runtime_error("invalid function type");
            })
