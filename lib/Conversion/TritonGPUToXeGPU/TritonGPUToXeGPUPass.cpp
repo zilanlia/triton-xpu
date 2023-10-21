@@ -168,16 +168,15 @@ public:
 
     addLegalDialect<mlir::spirv::SPIRVDialect>();
     addLegalDialect<triton::xegpu::XeGPUDialect>();
-    addLegalDialect<mlir::memref::MemRefDialect>();
     addLegalDialect<mlir::vector::VectorDialect>();
     addLegalDialect<mlir::scf::SCFDialect>();
     addLegalDialect<mlir::gpu::GPUDialect>();
-    // addLegalDialect<mlir::math::MathDialect>();
 
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     addLegalOp<arith::CmpIOp>();
 
-    addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect>(
+    addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
+                              mlir::memref::MemRefDialect>(
     [&](Operation *op) {
       if (typeConverter.isLegal(op))
         return true;

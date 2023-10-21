@@ -16,6 +16,7 @@
 
 using namespace mlir;
 using namespace mlir::triton;
+using mlir::triton::gpu::GenericEncodingAttr;
 
 #define GEN_PASS_CLASSES
 #include "triton/Conversion/TritonToTritonGPU/Passes.h.inc"
@@ -198,32 +199,35 @@ struct TritonExpandDimsPattern
     Attribute _argEncoding = argType.getEncoding();
     if (!_argEncoding)
       return failure();
-    auto argEncoding = _argEncoding.cast<triton::gpu::BlockedEncodingAttr>();
-    // return shape
-    auto retShape = argType.getShape().vec();
-    retShape.insert(retShape.begin() + op.getAxis(), 1);
-    // return encoding
-    auto retSizePerThread = argEncoding.getSizePerThread().vec();
-    retSizePerThread.insert(retSizePerThread.begin() + op.getAxis(), 1);
-    auto retThreadsPerWarp = argEncoding.getThreadsPerWarp().vec();
-    retThreadsPerWarp.insert(retThreadsPerWarp.begin() + op.getAxis(), 1);
-    auto retWarpsPerCTA = argEncoding.getWarpsPerCTA().vec();
-    retWarpsPerCTA.insert(retWarpsPerCTA.begin() + op.getAxis(), 1);
-    SmallVector<unsigned, 4> retOrder(retShape.size());
-    std::iota(retOrder.begin(), retOrder.end(), 0);
+  
+    auto argEncoding = _argEncoding.cast<triton::gpu::GenericEncodingAttr>();
+    triton::gpu::GenericEncodingAttr retEncoding = argEncoding;
+    // auto argEncoding = _argEncoding.cast<triton::gpu::BlockedEncodingAttr>();
+    // // return shape
+    // auto retShape = argType.getShape().vec();
+    // retShape.insert(retShape.begin() + op.getAxis(), 1);
+    // // return encoding
+    // auto retSizePerThread = argEncoding.getSizePerThread().vec();
+    // retSizePerThread.insert(retSizePerThread.begin() + op.getAxis(), 1);
+    // auto retThreadsPerWarp = argEncoding.getThreadsPerWarp().vec();
+    // retThreadsPerWarp.insert(retThreadsPerWarp.begin() + op.getAxis(), 1);
+    // auto retWarpsPerCTA = argEncoding.getWarpsPerCTA().vec();
+    // retWarpsPerCTA.insert(retWarpsPerCTA.begin() + op.getAxis(), 1);
+    // SmallVector<unsigned, 4> retOrder(retShape.size());
+    // std::iota(retOrder.begin(), retOrder.end(), 0);
 
-    auto argCTALayout = argEncoding.getCTALayout();
-    auto retCTAsPerCGA = insertOne(argCTALayout.getCTAsPerCGA(), op.getAxis());
-    auto retCTASplitNum =
-        insertOne(argCTALayout.getCTASplitNum(), op.getAxis());
-    auto retCTAOrder = insertOrder(argCTALayout.getCTAOrder(), op.getAxis());
-    auto retCTALayout = triton::gpu::CTALayoutAttr::get(
-        getContext(), retCTAsPerCGA, retCTASplitNum, retCTAOrder);
+    // auto argCTALayout = argEncoding.getCTALayout();
+    // auto retCTAsPerCGA = insertOne(argCTALayout.getCTAsPerCGA(), op.getAxis());
+    // auto retCTASplitNum =
+    //     insertOne(argCTALayout.getCTASplitNum(), op.getAxis());
+    // auto retCTAOrder = insertOrder(argCTALayout.getCTAOrder(), op.getAxis());
+    // auto retCTALayout = triton::gpu::CTALayoutAttr::get(
+    //     getContext(), retCTAsPerCGA, retCTASplitNum, retCTAOrder);
 
-    triton::gpu::BlockedEncodingAttr retEncoding =
-        triton::gpu::BlockedEncodingAttr::get(getContext(), retSizePerThread,
-                                              retThreadsPerWarp, retWarpsPerCTA,
-                                              retOrder, retCTALayout);
+    // triton::gpu::BlockedEncodingAttr retEncoding =
+    //     triton::gpu::BlockedEncodingAttr::get(getContext(), retSizePerThread,
+    //                                           retThreadsPerWarp, retWarpsPerCTA,
+    //                                           retOrder, retCTALayout);
     // convert operand to slice of return type
     Attribute newArgEncoding = triton::gpu::SliceEncodingAttr::get(
         getContext(), op.getAxis(), retEncoding);
@@ -278,11 +282,11 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     if (origShape[0] * origShape[1] / (numWarps * threadsPerWarp) >= 16)
       retSizePerThread = {4, 4};
     SmallVector<unsigned> retOrder = {1, 0};
-    Attribute dEncoding = triton::gpu::BlockedEncodingAttr::get(
-        getContext(), origShape, retSizePerThread, retOrder, numWarps,
-        threadsPerWarp, numCTAs);
-    RankedTensorType retType =
-        RankedTensorType::get(origShape, origType.getElementType(), dEncoding);
+    // Attribute dEncoding = triton::gpu::BlockedEncodingAttr::get(
+    //     getContext(), origShape, retSizePerThread, retOrder, numWarps,
+    //     threadsPerWarp, numCTAs);
+    // RankedTensorType retType =
+    //     RankedTensorType::get(origShape, origType.getElementType(), dEncoding);
     // a & b must be of smem layout
     auto aType = adaptor.getA().getType().cast<RankedTensorType>();
     auto bType = adaptor.getB().getType().cast<RankedTensorType>();
@@ -290,6 +294,14 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     Type bEltType = bType.getElementType();
     Attribute aEncoding = aType.getEncoding();
     Attribute bEncoding = bType.getEncoding();
+
+    auto aGenericLayout = aEncoding.dyn_cast<GenericEncodingAttr>();
+    auto newLayout = aGenericLayout.updateIsLayoutUpdated(2);
+    Attribute dEncoding = aEncoding;
+    RankedTensorType cNewType =
+        RankedTensorType::get(origShape, origType.getElementType(), newLayout);
+    RankedTensorType retType = cNewType;
+
     if (!aEncoding || !bEncoding)
       return failure();
     Value a = adaptor.getA();
@@ -297,14 +309,14 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     Value c = adaptor.getC();
     if (!aEncoding.isa<triton::gpu::DotOperandEncodingAttr>()) {
       Attribute encoding = triton::gpu::DotOperandEncodingAttr::get(
-          getContext(), 0, dEncoding, aEltType);
+          getContext(), 0, newLayout, aEltType);
       auto dstType =
           RankedTensorType::get(aType.getShape(), aEltType, encoding);
       a = rewriter.create<triton::gpu::ConvertLayoutOp>(a.getLoc(), dstType, a);
     }
     if (!bEncoding.isa<triton::gpu::DotOperandEncodingAttr>()) {
       Attribute encoding = triton::gpu::DotOperandEncodingAttr::get(
-          getContext(), 1, dEncoding, bEltType);
+          getContext(), 1, newLayout, bEltType);
       auto dstType =
           RankedTensorType::get(bType.getShape(), bEltType, encoding);
       b = rewriter.create<triton::gpu::ConvertLayoutOp>(b.getLoc(), dstType, b);

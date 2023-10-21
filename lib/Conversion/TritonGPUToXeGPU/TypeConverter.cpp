@@ -20,7 +20,6 @@ using ::mlir::triton::gpu::SliceEncodingAttr;
 TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
         mlir::MLIRContext &context): context(context) {
   addConversion([&](triton::PointerType type) -> llvm::Optional<Type> {
-    //return type; 
     return convertTritonPointerType(type);
   });
   addConversion([&](mlir::MemRefType type) -> llvm::Optional<Type> {
@@ -89,41 +88,6 @@ Type TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
   //return ::mlir::MemRefType::get({::mlir::ShapedType::kDynamic}, type.getPointeeType());
   return ::mlir::MemRefType::get({32}, type.getPointeeType());
 }
-
-// Value TritonGPUToXeGPUTypeConverter::packLLElements(
-//         Location loc, ValueRange resultVals, ConversionPatternRewriter &rewriter,
-//         Type type) {
-//   auto structType = this->convertType(type);
-//   if (!structType.isa<spirv::StructType>()) {
-//     return *resultVals.begin();
-//   }
-
-//   Value spirvStruct = rewriter.create<spirv::UndefOp>(loc, structType);
-
-//   for (const auto &v : llvm::enumerate(resultVals)) {
-//     assert(v.value() && "can not insert null values");
-//     spirvStruct = insert_val(structType, v.value(), spirvStruct, rewriter.getI32ArrayAttr(v.index()));
-//   }
-//   return spirvStruct;
-// }
-
-// SmallVector<Value> TritonGPUToXeGPUTypeConverter::unpackLLElements(
-//         Location loc, Value spirvStruct, ConversionPatternRewriter &rewriter,
-//         Type type) {
-//   assert(bool(spirvStruct) && "can not unpack null values");
-//   if (spirvStruct.getType().isIntOrIndexOrFloat() ||
-//           spirvStruct.getType().isa<triton::PointerType>() ||
-//           spirvStruct.getType().isa<spirv::PointerType>())
-//     return {spirvStruct};
-//   auto types =
-//           spirvStruct.getType().cast<spirv::StructType>().getElementTypes();
-//   SmallVector<Value> results(types.size());
-//   for (unsigned i = 0; i < types.size(); ++i) {
-//     Type type = types[i];
-//     results[i] = extract_val(type, spirvStruct, rewriter.getI32ArrayAttr(i));
-//   }
-//   return results;
-// }
 
 llvm::Optional<Type>
 TritonGPUToXeGPUTypeConverter::convertTritonTensorType(RankedTensorType type) {

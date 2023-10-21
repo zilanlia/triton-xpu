@@ -78,9 +78,9 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
   }];
 
   let arguments = (ins XeGPU_BaseAddrType: $source,
-                       Variadic<Index>: $offsets,
-                       Variadic<Index>: $shape,
-                       Variadic<Index>: $strides,
+                       Variadic<I32>: $offsets,
+                       Variadic<I32>: $shape,
+                       Variadic<I32>: $strides,
                        DenseI64ArrayAttr: $static_offsets,
                        DefaultValuedAttr<XeGPU_MemoryScopeAttr, "xegpu::MemoryScope::GLOBAL">: $memory_scope,
                        DefaultValuedAttr<BoolAttr, "true">: $boundary_check
@@ -110,9 +110,9 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
     OpBuilder<(ins "::mlir::Type": $tdesc, "::mlir::Value": $source, "::llvm::ArrayRef<mlir::OpFoldResult>": $offsets, 
                   CArg<"::mlir::triton::xegpu::MemoryScope", "::mlir::triton::xegpu::MemoryScope::GLOBAL">:$memory_scope, 
                   CArg<"bool", "true">:$boundary_check),
-    [{  assert(offsets.size() == getRankOf(source));
+    [{  //assert(offsets.size() == getRankOf(source));
         llvm::SmallVector<int64_t> staticOffsets;
-        llvm::SmallVector<mlir::Value> dynamicOffsets; 
+        llvm::SmallVector<mlir::Value> dynamicOffsets;
         dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets);
 
         build($_builder, $_state, tdesc, source, dynamicOffsets         /* empty dynamic offsets */,
@@ -146,7 +146,7 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
   let extraClassDeclaration = [{
     static size_t getRankOf(mlir::Value value) {
       if (llvm::isa<::mlir::IntegerType>(value.getType()))
-        return 0;
+        return 1;
       if (llvm::isa<::mlir::MemRefType>(value.getType()))
         return llvm::cast<::mlir::MemRefType>(value.getType()).getRank();
       assert(0 && "Unreachable");
@@ -333,7 +333,7 @@ def XeGPU_StoreNDOp : XeGPU_Op<"store_nd", []> {
   let summary = "stores a n-D block register region back to memory, currently only supports 2D";
   let arguments = (ins
     XeGPU_TensorDesc: $TensorDesc,
-    XeGPU_Vector2DType: $value,
+    XeGPU_VectorType: $value,
     OptionalAttr<XeGPU_CacheWriteAttr>: $l1_hint,
     OptionalAttr<XeGPU_CacheWriteAttr>: $l2_hint,
     OptionalAttr<XeGPU_CacheWriteAttr>: $l3_hint

@@ -190,6 +190,15 @@ SmallVector<unsigned> getSizePerThread(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     return SmallVector<unsigned>(blockedLayout.getSizePerThread().begin(),
                                  blockedLayout.getSizePerThread().end());
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    SmallVector<unsigned> ret = SmallVector<unsigned>(genericLayout.getElemPerThread().begin(),
+                                                      genericLayout.getElemPerThread().end());
+    //todo
+    llvm::outs()<<"\n\nret.size():"<<ret.size()<<"\n";
+    for(int i=0;i<ret.size();i++)
+      ret[i] = 1;
+ 
+    return ret;
   } else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>()) {
     auto sizePerThread = getSizePerThread(sliceLayout.getParent());
     sizePerThread.erase(sizePerThread.begin() + sliceLayout.getDim());
@@ -261,6 +270,9 @@ SmallVector<unsigned> getUniqueContigPerThread(Attribute layout,
   auto rank = shape.size();
   SmallVector<unsigned> ret(rank);
   auto contigPerThread = getContigPerThread(layout);
+  llvm::outs()<<"\n\nrank: "<<rank<<"\n";
+  llvm::outs()<<"\n\nlayout: "<<layout<<"\n";
+  llvm::outs()<<"\n\ncontigPerThread: "<<contigPerThread.size()<<"\n";
   assert(contigPerThread.size() == rank && "Unexpected contigPerThread size");
   for (int d = 0; d < rank; ++d) {
     ret[d] = std::min<unsigned>(shape[d], contigPerThread[d]);
@@ -367,6 +379,9 @@ SmallVector<unsigned> getOrder(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     return SmallVector<unsigned>(blockedLayout.getOrder().begin(),
                                  blockedLayout.getOrder().end());
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    return SmallVector<unsigned>(genericLayout.getOrder().begin(),
+                                 genericLayout.getOrder().end());
   } else if (auto mmaLayout = layout.dyn_cast<MmaEncodingAttr>()) {
     return {1, 0};
   } else if (auto dotLayout = layout.dyn_cast<DotOperandEncodingAttr>()) {

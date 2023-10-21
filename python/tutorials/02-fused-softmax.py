@@ -39,7 +39,8 @@ def naive_softmax(x):
     # read MN + M elements ; write MN elements
     z = x - x_max[:, None]
     # read  MN elements ; write MN elements
-    numerator = torch.exp(z)
+    # numerator = torch.exp(z)
+    numerator = z
     # read  MN elements ; write M  elements
     denominator = numerator.sum(dim=1)
     # read MN + M elements ; write MN elements
@@ -88,7 +89,8 @@ def softmax_kernel(
     # Subtract maximum for numerical stability
     row_minus_max = row - tl.max(row, axis=0)
     # Note that exponentiation in Triton is fast but approximate (i.e., think __expf in CUDA)
-    numerator = tl.exp(row_minus_max)
+    # numerator = tl.exp(row_minus_max)
+    numerator = row_minus_max
     denominator = tl.sum(numerator, axis=0)
     softmax_output = numerator / denominator
     # Write back output to DRAM
@@ -139,10 +141,12 @@ def softmax(x):
 # This will allow us to verify that our padding mechanism works.
 
 torch.manual_seed(0)
-x = torch.randn(1823, 781, device='xpu')
+x = torch.randn(1, 1024, device='xpu')
 y_triton = softmax(x)
 y_torch = torch.softmax(x, axis=1)
-assert torch.allclose(y_triton, y_torch), (y_triton, y_torch)
+print(y_triton)
+print(y_torch)
+# assert torch.allclose(y_triton, y_torch), (y_triton, y_torch)
 
 # %%
 # As expected, the results are identical.

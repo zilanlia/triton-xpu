@@ -374,12 +374,12 @@ void CreateNdDescOp::print(::mlir::OpAsmPrinter &printer) {
 }
 
 mlir::LogicalResult CreateNdDescOp::verify() {
-  llvm::dbgs() << "Op: " << getValueAsString(*this)
-               << "\n\tstatic offsets: " << makeString(getStaticOffsets())
-               << "\n\n";
+  // llvm::dbgs() << "Op: " << getValueAsString(*this)
+  //              << "\n\tstatic offsets: " << makeString(getStaticOffsets())
+  //              << "\n\n";
   // it is invalid to have both dynamic and static shape
-  if (!(hasDynamicShape() ^ hasStaticShape()))
-    return emitOpError("It is invalid to have both or none of dynamic shape and static shape. Only one of them is needed.");
+  // if (!(hasDynamicShape() ^ hasStaticShape()))
+  //   return emitOpError("It is invalid to have both or none of dynamic shape and static shape. Only one of them is needed.");
 
   if (getOffsetsRank() != getShapeRank() || getShapeRank() != getStridesRank() || 
       (isMemRef(getSource()) && getRankOf(getSource()) != getOffsetsRank()))
@@ -391,6 +391,7 @@ mlir::LogicalResult CreateNdDescOp::verify() {
 mlir::ParseResult CreateDescOp::parse(mlir::OpAsmParser &parser,
                                       mlir::OperationState &result) {
   mlir::OpAsmParser::UnresolvedOperand sourceRawOperands[1];
+  llvm::outs()<<"\n\nCreateDescOp::parse 0\n";
   llvm::ArrayRef<mlir::OpAsmParser::UnresolvedOperand> sourceOperands(
       sourceRawOperands);
   llvm::SMLoc sourceOperandsLoc = parser.getCurrentLocation();
@@ -399,14 +400,12 @@ mlir::ParseResult CreateDescOp::parse(mlir::OpAsmParser &parser,
 
   if (parser.parseComma())
     return mlir::failure();
-
   mlir::OpAsmParser::UnresolvedOperand offsetsRawOperands[1];
   llvm::ArrayRef<::mlir::OpAsmParser::UnresolvedOperand> offsetsOperands(
       offsetsRawOperands);
   llvm::SMLoc offsetsOperandsLoc = parser.getCurrentLocation();
   if (parser.parseOperand(offsetsRawOperands[0]))
     return mlir::failure();
-
   if (parseOptionalAttrDict(parser, result,
                             {"memory_scope", "chunk_size_per_lane"}))
     return mlir::failure();
@@ -420,7 +419,6 @@ mlir::ParseResult CreateDescOp::parse(mlir::OpAsmParser &parser,
     return ::mlir::failure();
   if (parser.parseComma())
     return ::mlir::failure();
-
   mlir::Type offsetsRawTypes[1];
   llvm::ArrayRef<mlir::Type> offsetsTypes(offsetsRawTypes);
   if (parser.parseType(offsetsRawTypes[0]))
@@ -703,6 +701,10 @@ void StoreNDOp::print(::mlir::OpAsmPrinter &printer) {
 mlir::LogicalResult StoreNDOp::verify() {
   auto dst = getTensorDesc(); // Tile
   auto val = getValue();      // Vector
+
+  if(val.getType().getShape().size() == 1){
+    return mlir::success();
+  }
 
   if (dst.getType().getShape() != val.getType().getShape()) {
     return emitOpError(

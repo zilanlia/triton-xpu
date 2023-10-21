@@ -3,6 +3,7 @@ add_mlir_conversion_library(TritonGPUToXeGPU
   TritonGPUToXeGPUPass.cpp
   TypeConverter.cpp
   ReduceOpToXeGPU.cpp
+  ScfOpToXeGPU.cpp
 
   ADDITIONAL_HEADER_DIRS
    ${PROJECT_SOURCE_DIR}/include/triton/Conversion/TritonGPUToXeGPU

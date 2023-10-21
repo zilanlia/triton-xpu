@@ -25,7 +25,7 @@ def XeGPU_IntArrayAttr2: ConfinedAttr<DenseI64ArrayAttr, [DenseArrayCount<2>]>;
 def XeGPU_IntType: AnyTypeOf<[I1, I8, I16, I32, I64, SI1, SI8, SI16, SI32, SI64, UI1, UI8, UI16, UI32, UI64]>;
 def XeGPU_FloatType: AnyTypeOf<[F16, F32, F64, BF16, F8E4M3FN, F8E5M2, F8E4M3FNUZ, F8E4M3B11FNUZ, F8E5M2FNUZ]>;
 def XeGPU_ScalarType: AnyTypeOf<[XeGPU_IntType, XeGPU_FloatType]>;
-def XeGPU_BaseAddrType: AnyTypeOf<[MemRefRankOf<[XeGPU_ScalarType], [1, 2]>, UI64]>;
+def XeGPU_BaseAddrType: AnyTypeOf<[MemRefRankOf<[XeGPU_ScalarType], [1, 2]>, UI64, I64, I32]>;
 def XeGPU_VectorType: VectorOfRankAndType<[1,2,3], [XeGPU_ScalarType]>;
 def XeGPU_Vector3DType: VectorOfRankAndType<[3], [XeGPU_ScalarType]>;
 def XeGPU_Vector2DType: VectorOfRankAndType<[2], [XeGPU_ScalarType]>;

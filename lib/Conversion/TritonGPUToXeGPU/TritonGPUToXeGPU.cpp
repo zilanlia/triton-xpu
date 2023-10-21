@@ -18,6 +18,7 @@
 
 using namespace mlir;
 using namespace mlir::triton;
+using namespace mlir::triton::gpu;
 using namespace mlir::triton::xegpu;
 
 using ::mlir::triton::gpu::GenericEncodingAttr;
@@ -36,7 +37,6 @@ public:
   LogicalResult
   matchAndRewrite(Op op, typename Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::outs()<<"\n\nGenericOpPattern op: "<<op<<"\n";
     Type retType = this->getTypeConverter()->convertType(op.getType());
     addNamedAttrs(
         rewriter.replaceOpWithNewOp<Op>(op, retType, adaptor.getOperands()),
@@ -101,10 +101,16 @@ public:
       desc = (&castOp)->getInputs()[0];
     }
 
-    llvm::outs()<<"\n\ntdesc: "<<desc<<"\n";
-    auto mask = adaptor.getMask();
+    Value mask = adaptor.getMask();
     auto value = op.getResult();
     auto newType = this->getTypeConverter()->convertType(value.getType());
+
+    if(!mask) {
+      auto elems = newType.dyn_cast<VectorType>().getShape()[0];
+      auto maskType = mlir::VectorType::get(elems, i32Type);
+      DenseElementsAttr constData = DenseElementsAttr::get(maskType, ArrayRef<int>(std::vector<int>(elems, 1)));
+      mask = rewriter.create<spirv::ConstantOp>(loc, maskType, constData);
+    }
 
     auto L1_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
     auto L2_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
@@ -139,13 +145,24 @@ public:
     auto mask = adaptor.getMask();
     auto newType = value.getType();
 
+    if(!mask) {
+      auto elems = newType.dyn_cast<VectorType>().getShape()[0];
+      auto maskType = mlir::VectorType::get(elems, i32Type);
+      DenseElementsAttr constData = DenseElementsAttr::get(maskType, ArrayRef<int>(std::vector<int>(elems, 1)));
+      mask = rewriter.create<spirv::ConstantOp>(loc, maskType, constData);
+    }
+
     auto L1_hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
     auto L2_hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
     auto L3_hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
 
     Value ret = rewriter.create<xegpu::StoreScatterOp>(loc, value, desc, mask, L1_hint, L2_hint, L3_hint).getODSResults(0)[0];
-    llvm::outs()<<"\n\nxegpu::StoreGatherOp: " << ret <<"\n";
     rewriter.replaceOp(op, ret);
+
+    // Operation *opPtr = op;
+    // auto mod = op->getParentOfType<ModuleOp>();
+    // mod->print(llvm::outs());
+
     return success();
   }
 };
@@ -160,9 +177,12 @@ public:
     auto loc = op->getLoc();
     auto context = rewriter.getContext();
 
-    auto subgroubId = rewriter.create<::mlir::gpu::SubgroupIdOp>(loc, rewriter.getIndexType());
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(loc, TypeRange{i64_ty}, ValueRange{subgroubId});
-    auto sgId = zext(i32_ty, cast.getResult(0));
+    Value subgroubId = rewriter.create<::mlir::gpu::SubgroupIdOp>(loc, rewriter.getIndexType());
+    Value sgId = rewriter.create<UnrealizedConversionCastOp>(loc, i32_ty, subgroubId).getResult(0);
+    //Value sgId = zext(i32_ty, subgroubId);
+    //to do replace 32 with subgroup nums
+    auto subGroupNums = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(32));
+    sgId = urem(sgId, subGroupNums); 
     auto module = op.getOperation()->getParentOfType<ModuleOp>();
     int sgSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
     auto sgAddr = rewriter.create<arith::MulIOp>(loc, i32_ty, sgId, 
@@ -173,12 +193,20 @@ public:
     //Value sgAddrs = rewriter.create<vector::SplatOp>(loc, type, sgAddr);
 
     //avoid spirv.CompositeConstruct
-    DenseElementsAttr constData = DenseElementsAttr::get(v32i32Type, ArrayRef<int>(std::vector<int>(32,0)));
-    Value sgAddrs = rewriter.create<spirv::ConstantOp>(loc, v32i32Type, constData);
-    for(int i = 0; i < 32; i++){
-      Value idx = rewriter.create<spirv::ConstantOp>(loc, i32Type, IntegerAttr::get(i32Type, i));
-      sgAddrs = rewriter.create<spirv::VectorInsertDynamicOp>(loc, v32i32Type, sgAddrs, sgAddr, idx);
-    }
+    Value sgAddrs = rewriter.create<spirv::UndefOp>(loc, v32i32Type);
+    auto idx0 = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
+    sgAddrs =
+        rewriter.create<spirv::VectorInsertDynamicOp>(loc, sgAddrs, sgAddr, idx0);
+    SmallVector<int32_t, 32> indices(32, 0);
+    sgAddrs = rewriter.create<spirv::VectorShuffleOp>(
+          loc, v32i32Type, sgAddrs, sgAddrs, rewriter.getI32ArrayAttr(indices));
+
+    // DenseElementsAttr constData = DenseElementsAttr::get(v32i32Type, ArrayRef<int>(std::vector<int>(32,0)));
+    // Value sgAddrs = rewriter.create<spirv::ConstantOp>(loc, v32i32Type, constData);
+    // for(int i = 0; i < 32; i++){
+    //   Value idx = rewriter.create<spirv::ConstantOp>(loc, i32Type, IntegerAttr::get(i32Type, i));
+    //   sgAddrs = rewriter.create<spirv::VectorInsertDynamicOp>(loc, v32i32Type, sgAddrs, sgAddr, idx);
+    // }
 
     llvm::outs()<<"\n\nsgAddrs: "<<sgAddrs<<"\n";
     std::vector<int> values(sgSize, 0);
@@ -191,7 +219,6 @@ public:
     Value sgOffsets = rewriter.create<arith::AddIOp>(loc, type, sgAddrs, offsets);
 
     rewriter.replaceOp(op, sgOffsets);
-    llvm::outs()<<"\n\nafter MakeRangeOpToXeGPUPattern: \n";
     return success();
   }
 };
@@ -236,8 +263,16 @@ public:
         }
         ptrType = ptr.getType();
         llvm::outs() << "\n\nptr: "<< ptr << "\n";
-        Type originalOffsetType = originalOffset.getType();
-        Value originalOffsetVec = rewriter.create<vector::SplatOp>(loc, offsetType, originalOffset);
+
+        Value originalOffsetVec = rewriter.create<spirv::UndefOp>(loc, offsetType);
+        auto idx0 = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
+        originalOffsetVec = rewriter.create<spirv::VectorInsertDynamicOp>(loc, 
+                                              originalOffsetVec, originalOffset, idx0);
+        SmallVector<int32_t, 32> indices(32, 0);
+        originalOffsetVec = rewriter.create<spirv::VectorShuffleOp>(
+              loc, offsetType, originalOffsetVec, originalOffsetVec, rewriter.getI32ArrayAttr(indices));
+
+        //Value originalOffsetVec = rewriter.create<vector::SplatOp>(loc, offsetType, originalOffset);
         offset = rewriter.create<arith::AddIOp>(loc, offsetType, offset, originalOffsetVec);
         llvm::outs() << "\n\noffset: "<< offset << "\n";
         break;
@@ -332,12 +367,24 @@ public:
     // Value ret = rewriter.create<vector::SplatOp>(loc, newType, src);
 
     // avoid spirv.CompositeConstruct
-    DenseElementsAttr constData = DenseElementsAttr::get(v32i32Type, ArrayRef<int>(std::vector<int>(32,0)));
-    Value ret = rewriter.create<spirv::ConstantOp>(loc, v32i32Type, constData);
-    for(int i = 0; i < 32; i++){
-      Value idx = rewriter.create<spirv::ConstantOp>(loc, i32Type, IntegerAttr::get(i32Type, i));
-      ret = rewriter.create<spirv::VectorInsertDynamicOp>(loc, v32i32Type, ret, src, idx);
-    }
+    Value ret = rewriter.create<spirv::UndefOp>(loc, newType);
+    auto idx0 = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
+    ret = rewriter.create<spirv::VectorInsertDynamicOp>(loc, ret, src, idx0);
+    SmallVector<int32_t, 32> indices(32, 0);
+    ret = rewriter.create<spirv::VectorShuffleOp>(
+          loc, newType, ret, ret, rewriter.getI32ArrayAttr(indices));
+
+    // DenseElementsAttr constData;
+    // if(isa<FloatType>(elemType)){
+    //   constData = DenseElementsAttr::get(newType, ArrayRef<float>(std::vector<float>(sgSize, 0.0f)));
+    // } else {
+    //   constData = DenseElementsAttr::get(newType, ArrayRef<int>(std::vector<int>(sgSize, 0)));
+    // }
+    // Value ret = rewriter.create<spirv::ConstantOp>(loc, newType, constData);
+    // for(int i = 0; i < 32; i++){
+    //   Value idx = rewriter.create<spirv::ConstantOp>(loc, i32Type, IntegerAttr::get(i32Type, i));
+    //   ret = rewriter.create<spirv::VectorInsertDynamicOp>(loc, newType, ret, src, idx);
+    // }
 
     rewriter.replaceOp(op, ret);
     return success();
@@ -358,10 +405,11 @@ public:
             loc, rewriter.getIndexType(), dims[op.getAxisAsInt()]);
     // Value blockId_idx = rewriter.create<::mlir::arith::TruncIOp>(
     //         loc, i32_ty, blockId);
-    Value cast = rewriter.create<UnrealizedConversionCastOp>(loc, i64_ty, blockId).getResult(0);
+    Value cast = rewriter.create<UnrealizedConversionCastOp>(loc, i32_ty, blockId).getResult(0);
 
-    rewriter.replaceOpWithNewOp<spirv::UConvertOp>(
-            op, i32_ty, cast);
+    // rewriter.replaceOpWithNewOp<spirv::UConvertOp>(
+    //         op, i32_ty, cast);
+    rewriter.replaceOp(op, cast);
 
     return success();
   }
@@ -371,6 +419,55 @@ private:
                                                   mlir::gpu::Dimension::z};
 };
 
+class ConvertLayoutOpToXeGPUPattern : public OpConversionPattern<ConvertLayoutOp> {
+public:
+  using OpConversionPattern<ConvertLayoutOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto src = adaptor.getSrc();
+    rewriter.replaceOp(op, src);
+    return success();
+  }
+};
+
+class MakeTensorPtrOpToXeGPUPattern : public OpConversionPattern<MakeTensorPtrOp> {
+public:
+  using OpConversionPattern<MakeTensorPtrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(MakeTensorPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    llvm::outs()<<"\n\nMakeTensorPtrOpToXeGPUPattern: \n";
+    return success();
+  }
+};
+
+class DotOpToXeGPUPattern : public OpConversionPattern<DotOp> {
+public:
+  using OpConversionPattern<DotOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(DotOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    llvm::outs()<<"\n\nDotOpToXeGPUPattern: \n";
+    return success();
+  }
+};
+
+class AdvanceOpToXeGPUPattern : public OpConversionPattern<AdvanceOp> {
+public:
+  using OpConversionPattern<AdvanceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(AdvanceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    llvm::outs()<<"\n\nAdvanceOpToXeGPUPattern: \n";
+    return success();
+  }
+};
+
 void populateTritonGPUToXeGPUPatterns(
     TritonGPUToXeGPUTypeConverter &typeConverter, RewritePatternSet &patterns) {
   llvm::outs()<<"\n\npopulateXeGPUToVCIntrinsicsPatterns\n";
@@ -378,7 +475,9 @@ void populateTritonGPUToXeGPUPatterns(
   patterns.add<LoadOpToXeGPUPattern, StoreOpToXeGPUPattern,
                MakeRangeOpToXeGPUPattern, AddPtrOpToXeGPUPattern,
                CmpIOpToXeGPUPattern, SplatOpToXeGPUPattern,
-               GetProgramIdOpToXeGPUPattern, ReturnOpToXeGPUPattern>(
+               GetProgramIdOpToXeGPUPattern, ReturnOpToXeGPUPattern,
+               ConvertLayoutOpToXeGPUPattern, MakeTensorPtrOpToXeGPUPattern,
+               DotOpToXeGPUPattern, AdvanceOpToXeGPUPattern>(
       typeConverter, context);
 
   //process arith op
