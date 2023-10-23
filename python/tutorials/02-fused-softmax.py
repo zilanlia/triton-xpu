@@ -39,15 +39,13 @@ def naive_softmax(x):
     # read MN + M elements ; write MN elements
     z = x - x_max[:, None]
     # read  MN elements ; write MN elements
-    # numerator = torch.exp(z)
-    numerator = z
+    numerator = torch.exp(z)
     # read  MN elements ; write M  elements
     denominator = numerator.sum(dim=1)
     # read MN + M elements ; write MN elements
     ret = numerator / denominator[:, None]
     # in total: read 5MN + 2M elements ; wrote 3MN + 2M elements
     return ret
-
 
 # %%
 # When implemented naively in PyTorch, computing :code:`y = naive_softmax(x)` for :math:`x \in R^{M \times N}`
@@ -89,8 +87,7 @@ def softmax_kernel(
     # Subtract maximum for numerical stability
     row_minus_max = row - tl.max(row, axis=0)
     # Note that exponentiation in Triton is fast but approximate (i.e., think __expf in CUDA)
-    # numerator = tl.exp(row_minus_max)
-    numerator = row_minus_max
+    numerator = tl.exp(row_minus_max)
     denominator = tl.sum(numerator, axis=0)
     softmax_output = numerator / denominator
     # Write back output to DRAM
@@ -142,11 +139,16 @@ def softmax(x):
 
 torch.manual_seed(0)
 x = torch.randn(1, 1024, device='xpu')
+for i in range(0, 1024):
+    x[0][i] = i
 y_triton = softmax(x)
 y_torch = torch.softmax(x, axis=1)
-print(y_triton)
-print(y_torch)
-# assert torch.allclose(y_triton, y_torch), (y_triton, y_torch)
+y_native = naive_softmax(x)
+print("x", x)
+print("y_triton", y_triton)
+print("y_torch", y_torch)
+print("y_native", y_native)
+assert torch.allclose(y_triton, y_torch), (y_triton, y_torch)
 
 # %%
 # As expected, the results are identical.
