@@ -115,6 +115,8 @@ private:
 
     const int elemsPerSg = 2;
     //4: sizeof(f32)
+    sgId = rewriter.create<spirv::UModOp>(loc, i32_ty, sgId,
+                  rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(32)));
     auto slmStoreAddr = rewriter.create<arith::MulIOp>(loc, i32_ty, sgId, 
                   rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(elemsPerSg * 4)));
 

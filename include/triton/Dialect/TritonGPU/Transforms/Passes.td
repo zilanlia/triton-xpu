@@ -148,4 +148,17 @@ def TritonGPUDecomposeConversions: Pass<"tritongpu-decompose-conversions", "mlir
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonGPULayoutPropagation : Pass<"tritongpu-layout-propagation", "mlir::ModuleOp"> {
+  let summary = "Deriving the layout of the tensor through backpropagation";
+
+  let description = [{
+    This helps to deriving the layout of the tensor through backpropagation.
+  }];
+
+  let constructor = "mlir::createTritonGPULayoutPropagationPass()";
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 #endif

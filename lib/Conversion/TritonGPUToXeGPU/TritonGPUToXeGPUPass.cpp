@@ -44,6 +44,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "TritonGPUToXeGPU.h"
 #include "ReduceOpToXeGPU.h"
+#include "ScfOpToXeGPU.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -116,7 +117,6 @@ struct XeGPUFuncOpConversion : public OpConversionPattern<triton::FuncOp> {
 
     rewriter.eraseBlock(&block);
 
-
     // Copy over all attributes other than the function name and type.
     for (const auto &namedAttr : funcOp->getAttrs()) {
         if (namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
@@ -164,6 +164,8 @@ public:
     addIllegalDialect<triton::TritonDialect>();
     addIllegalOp<triton::GetProgramIdOp>();
     addIllegalOp<triton::SplatOp>();
+    addIllegalOp<triton::DotOp>();
+    addIllegalOp<triton::gpu::ConvertLayoutOp>();
     addLegalOp<vector::SplatOp>();
 
     addLegalDialect<mlir::spirv::SPIRVDialect>();
@@ -181,6 +183,27 @@ public:
       if (typeConverter.isLegal(op))
         return true;
       return false;
+    });
+
+    addDynamicallyLegalOp<scf::ForOp>([](scf::ForOp forOp) -> bool {
+      for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
+        Value arg = forOp.getRegionIterArgs()[i];
+        auto type = arg.getType();
+        if(isa<triton::PointerType>(type)){
+          return false;
+        }
+      }
+      return true;
+    });
+
+    addDynamicallyLegalOp<scf::YieldOp>([](scf::YieldOp yieldOp) -> bool {
+      for (auto arg : yieldOp.getResults()) {
+        auto type = arg.getType();
+        if(isa<triton::PointerType>(type)){
+          return false;
+        }
+      }
+      return true;
     });
   }
 };
@@ -215,6 +238,7 @@ void TritonGPUToXeGPUPass::runOnOperation() {
 
   populateTritonGPUToXeGPUPatterns(xeGPUTypeConverter, patterns);
   populateReduceOpToXeGPUPatterns(xeGPUTypeConverter, patterns);
+  populateScfOpToXeGPUPatterns(xeGPUTypeConverter, patterns);
 
   if (failed(applyPartialConversion(tritonGPUModule, xeGPUTarget, std::move(patterns)))){
       return signalPassFailure();

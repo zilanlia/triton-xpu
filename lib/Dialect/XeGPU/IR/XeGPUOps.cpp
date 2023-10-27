@@ -793,7 +793,6 @@ void PrefetchNDOp::print(::mlir::OpAsmPrinter &printer) {
 }
 
 mlir::LogicalResult DpasOp::verify() {
-
   int64_t lhsRank = getLhsType().getRank();
   int64_t rhsRank = getRhsType().getRank();
   mlir::Type lhsElemType = getLhsType().getElementType();

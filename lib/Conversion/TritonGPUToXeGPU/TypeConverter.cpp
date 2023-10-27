@@ -2,12 +2,13 @@
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVTypes.h"
 #include "triton/Conversion/MLIRTypes.h"
-//#include "../TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/XeGPU/IR/XeGPUOps.h"
 #include "Utility.h"
-//#include "../TritonGPUToLLVM/TypeConverter.h"
+
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gpu;
+using namespace mlir::triton::xegpu;
 
 using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::GenericEncodingAttr;
@@ -19,8 +20,8 @@ using ::mlir::triton::gpu::SliceEncodingAttr;
 
 TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
         mlir::MLIRContext &context): context(context) {
-  addConversion([&](triton::PointerType type) -> llvm::Optional<Type> {
-    return convertTritonPointerType(type);
+  addConversion([&](triton::PointerType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes) -> std::optional<mlir::LogicalResult> {
+    return convertTritonPointerType(type, resultTypes);
   });
   addConversion([&](mlir::MemRefType type) -> llvm::Optional<Type> {
     return type; 
@@ -63,31 +64,101 @@ TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
 
   // Add generic source and target materializations to handle cases where
   // non-SPIRV types persist after an SPIRV conversion.
-  addSourceMaterialization([&](OpBuilder &builder, Type resultType,
-                               ValueRange inputs,
-                               Location loc) -> Optional<Value> {
-    if (inputs.size() != 1)
-      return std::nullopt;
-
-    return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+  addArgumentMaterialization([&](mlir::OpBuilder &builder, mlir::Type resultType,
+                             mlir::ValueRange inputs,
+                             mlir::Location loc) -> std::optional<mlir::Value> {
+    return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs)
             .getResult(0);
   });
-  addTargetMaterialization([&](OpBuilder &builder, Type resultType,
-                               ValueRange inputs,
-                               Location loc) -> Optional<Value> {
-    if (inputs.size() != 1)
-      return std::nullopt;
-
-    return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+    
+  addSourceMaterialization([&](mlir::OpBuilder &builder, mlir::Type resultType,
+                             mlir::ValueRange inputs,
+                             mlir::Location loc) -> std::optional<mlir::Value> {
+    return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs)
             .getResult(0);
+  });
+  addTargetMaterialization([&](OpBuilder &builder, TypeRange resultType,
+                               Value inputs,
+                               Location loc) -> Optional<SmallVector<Value>> {
+    SmallVector<Value> vec;
+    llvm::outs() << "\n\naddTargetMaterialization:\n";
+    auto ret =  builder.create<UnrealizedConversionCastOp>(loc, resultType[0], inputs)
+            .getOutputs();
+    llvm::outs() << "\n\nret:"<<ret[0]<<"\n";
+    return ret;
+
   });
 }
 
-Type TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
-        triton::PointerType type)  {
+std::optional<mlir::LogicalResult>
+TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
+        triton::PointerType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes)  {
+  auto pointeeType = type.getPointeeType();
+  if(isa<RankedTensorType>(pointeeType)){
+    // auto tensorType = type.getPointeeType().cast<RankedTensorType>();
+    // auto blockShape = tensorType.getShape();
+
+    // llvm::outs()<<"\n\nconvertTritonPointerType type: "<<type<<"\n";
+    // return spirv::StructType::get(SmallVector<Type>(8, IntegerType::get(type.getContext(), 64)));
+
+    // llvm::SmallVectorImpl<mlir::Type> resultTypes();
+    auto tensorType = pointeeType.cast<RankedTensorType>();
+    Attribute layout = tensorType.getEncoding();
+    SmallVector<int64_t> shape(tensorType.getShape().begin(), tensorType.getShape().end());
+    Type elemTy = tensorType.getElementType();
+
+    xegpu::TensorDescType tdescTy;
+    if(shape[1]==32){
+      tdescTy = xegpu::TensorDescType::get({8, 16}, elemTy, MemoryScopeAttr::get(type.getContext(), MemoryScope::GLOBAL));
+    } else{
+      tdescTy = xegpu::TensorDescType::get({16, 16}, elemTy, MemoryScopeAttr::get(type.getContext(), MemoryScope::GLOBAL));
+    }
+    auto numElements = 8;
+    resultTypes.assign(numElements, tdescTy);
+    //return resultTypes;
+  }else{
+    auto newType = ::mlir::MemRefType::get({32}, type.getPointeeType());
+    resultTypes.assign(1, newType);
+  }
   //return ::mlir::MemRefType::get({::mlir::ShapedType::kDynamic}, type.getPointeeType());
-  return ::mlir::MemRefType::get({32}, type.getPointeeType());
+  
+  return success();
 }
+
+Value packLLElements(
+        Location loc, ValueRange resultVals, ConversionPatternRewriter &rewriter,
+        Type type) {
+  auto structType = type;
+  if (!structType.isa<spirv::StructType>()) {
+    return *resultVals.begin();
+  }
+
+  Value spirvStruct = rewriter.create<spirv::UndefOp>(loc, structType);
+
+  for (const auto &v : llvm::enumerate(resultVals)) {
+    assert(v.value() && "can not insert null values");
+    spirvStruct = insert_val(structType, v.value(), spirvStruct, rewriter.getI32ArrayAttr(v.index()));
+  }
+  return spirvStruct;
+}
+
+SmallVector<Value> unpackLLElements(
+        Location loc, Value spirvStruct, ConversionPatternRewriter &rewriter) {
+  assert(bool(spirvStruct) && "can not unpack null values");
+  if (spirvStruct.getType().isIntOrIndexOrFloat() ||
+          spirvStruct.getType().isa<triton::PointerType>() ||
+          spirvStruct.getType().isa<spirv::PointerType>())
+    return {spirvStruct};
+  auto types =
+          spirvStruct.getType().cast<spirv::StructType>().getElementTypes();
+  SmallVector<Value> results(types.size());
+  for (unsigned i = 0; i < types.size(); ++i) {
+    Type type = types[i];
+    results[i] = extract_val(type, spirvStruct, rewriter.getI32ArrayAttr(i));
+  }
+  return results;
+}
+
 
 llvm::Optional<Type>
 TritonGPUToXeGPUTypeConverter::convertTritonTensorType(RankedTensorType type) {
@@ -105,15 +176,33 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(RankedTensorType type) {
   } else if(layout.isa<GenericEncodingAttr>()){
     auto genericLayout = llvm::dyn_cast<GenericEncodingAttr>(layout);
     Type elemTy = type.getElementType();
-    auto isMma = genericLayout.getIsLayoutUpdated();
+    auto MmaFlag = genericLayout.getIsLayoutUpdated();
 
     if(elemTy.isa<triton::PointerType>()){
       elemTy = elemTy.cast<triton::PointerType>().getPointeeType();
+      std::vector<int64_t> storeShape{32};
+      return ::mlir::triton::xegpu::TensorDescType::get(context, storeShape, elemTy, 
+                                              ScatteredAttr::get(context));
     }
 
     auto threadShape = genericLayout.getThreadShape();
-    unsigned simd = product_interval<unsigned>(threadShape, 0, threadShape.size() / 2);
-    return mlir::VectorType::get(simd, elemTy);
+    if(MmaFlag==2){
+      return spirv::StructType::get(SmallVector<Type>(16, 
+                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16}, elemTy)));
+    }
+    else if(shape.size()==2 && shape[1]==32){
+      return spirv::StructType::get(SmallVector<Type>(8, 
+                      mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy)));
+    } else if(shape.size()==2 && shape[1]==64 && elemTy == f16Type){
+      return spirv::StructType::get(SmallVector<Type>(8, 
+                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy)));
+    } else if(shape.size()==2 && shape[1]==64 && elemTy == f32Type){
+      return spirv::StructType::get(SmallVector<Type>(16, 
+                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16}, elemTy)));
+    } else{
+      unsigned simd = product_interval<unsigned>(threadShape, 0, threadShape.size() / 2);
+      return mlir::VectorType::get(simd, elemTy);
+    }
   } else if (auto shared_layout =
                  layout.dyn_cast_or_null<SharedEncodingAttr>()) {
     return type;
@@ -122,7 +211,14 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(RankedTensorType type) {
     if (dotOpLayout.getParent().isa<BlockedEncodingAttr>()) { // for parent is blocked layout
       return type;
     } else if (dotOpLayout.getParent().isa<GenericEncodingAttr>()) { // for parent is generic layout
-      return type;
+      Type elemTy = type.getElementType();
+      if(shape.size()==2 && shape[1]==32){
+        return spirv::StructType::get(SmallVector<Type>(8, 
+                      mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy)));
+      } else if(shape.size()==2 && shape[1]==64){
+        return spirv::StructType::get(SmallVector<Type>(8, 
+                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy)));
+      } 
     }else { // for parent is MMA layout
       return type;
     }

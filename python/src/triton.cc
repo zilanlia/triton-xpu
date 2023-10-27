@@ -1761,6 +1761,10 @@ void init_triton_ir(py::module &&m) {
            [](mlir::PassManager &self) {
              self.addPass(mlir::createTritonGPUReorderInstructionsPass());
            })
+      .def("add_tritongpu_layout_propagation_pass",
+           [](mlir::PassManager &self) {
+             self.addPass(mlir::createTritonGPULayoutPropagationPass());
+           })
       .def("add_tritongpu_rewrite_tensor_pointer_pass",
            [](mlir::PassManager &self, int computeCapability) {
              self.addPass(mlir::createTritonGPURewriteTensorPointerPass(

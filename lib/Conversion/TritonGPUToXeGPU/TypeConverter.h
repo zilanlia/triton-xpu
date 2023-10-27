@@ -2,24 +2,25 @@
 #define TRITON_CONVERSION_TRITONGPU_TO_XEGPU_TYPECONVERTER_H
 
 #include "triton/Conversion/MLIRTypes.h"
+#include <mlir/Transforms/OneToNTypeConversion.h>
 
 using namespace mlir;
 using namespace mlir::triton;
 
-class TritonGPUToXeGPUTypeConverter : public mlir::TypeConverter {
+Value packLLElements(Location loc, ValueRange resultVals,
+                      ConversionPatternRewriter &rewriter, Type type);
+
+SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
+                                    ConversionPatternRewriter &rewriter);
+
+class TritonGPUToXeGPUTypeConverter : public mlir::OneToNTypeConverter {
 public:
-  using TypeConverter::convertType;
+  using OneToNTypeConverter::convertType;
 
   TritonGPUToXeGPUTypeConverter(mlir::MLIRContext &context);
 
-  Type convertTritonPointerType(triton::PointerType type);
-
-  Value packLLElements(Location loc, ValueRange resultVals,
-                       ConversionPatternRewriter &rewriter, Type type);
-
-  SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
-                                      ConversionPatternRewriter &rewriter,
-                                      Type type);
+  std::optional<mlir::LogicalResult> 
+    convertTritonPointerType(triton::PointerType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes);
 
   llvm::Optional<Type> convertTritonTensorType(RankedTensorType type);
 
@@ -29,3 +30,28 @@ private:
 };
 
 #endif
+
+
+
+// Value packLLElements(Location loc, ValueRange resultVals,
+//                       ConversionPatternRewriter &rewriter, Type type);
+
+// SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
+//                                     ConversionPatternRewriter &rewriter);
+
+// class TritonGPUToXeGPUTypeConverter : public mlir::TypeConverter {
+// public:
+//   using TypeConverter::convertType;
+
+//   TritonGPUToXeGPUTypeConverter(mlir::MLIRContext &context);
+
+//   Type convertTritonPointerType(triton::PointerType type);
+
+//   llvm::Optional<Type> convertTritonTensorType(RankedTensorType type);
+
+
+// private:
+//   mlir::MLIRContext &context;
+// };
+
+// #endif
