@@ -299,51 +299,53 @@ public:
         llvm::outs()<<"\n\nnewType: "<<newType<<"\n";
         B.setType(newType);
       }
-      else if (auto StoreOp = dyn_cast<triton::StoreOp>(curr)) {
-        const std::vector<unsigned int> threadShapeVec{1, 16, 8, 4};
-        const std::vector<unsigned int> threadStrideVec{0, 1, 32, 64};
-        const std::vector<unsigned int> elemPerThreadVec{8, 1, 4, 4};
-        const std::vector<unsigned int> elemStrideVec{1, 0, 8, 16};
-        const std::vector<unsigned int> subGroupShapeVec{4, 4, 0, 0};
-        const std::vector<unsigned int> orderVec{1, 0, 1, 0};
-        ArrayRef<unsigned int> threadShape(threadShapeVec);
-        ArrayRef<unsigned int> threadstride(threadStrideVec);
-        ArrayRef<unsigned int> elemPerThread(elemPerThreadVec);
-        ArrayRef<unsigned int> elemStride(elemStrideVec);
-        ArrayRef<unsigned int> subGroupShape(subGroupShapeVec);
-        ArrayRef<unsigned int> order(orderVec);
-        encoding = triton::gpu::GenericEncodingAttr::get(
-            StoreOp.getContext(), threadShape, threadstride, elemPerThread, elemStride, subGroupShape, orderVec, 2);
+      // else if (auto StoreOp = dyn_cast<triton::StoreOp>(curr)) {
+      //   const std::vector<unsigned int> threadShapeVec{1, 16, 8, 4};
+      //   const std::vector<unsigned int> threadStrideVec{0, 1, 32, 64};
+      //   const std::vector<unsigned int> elemPerThreadVec{8, 1, 4, 4};
+      //   const std::vector<unsigned int> elemStrideVec{1, 0, 8, 16};
+      //   const std::vector<unsigned int> subGroupShapeVec{4, 4, 0, 0};
+      //   const std::vector<unsigned int> orderVec{1, 0, 1, 0};
+      //   ArrayRef<unsigned int> threadShape(threadShapeVec);
+      //   ArrayRef<unsigned int> threadstride(threadStrideVec);
+      //   ArrayRef<unsigned int> elemPerThread(elemPerThreadVec);
+      //   ArrayRef<unsigned int> elemStride(elemStrideVec);
+      //   ArrayRef<unsigned int> subGroupShape(subGroupShapeVec);
+      //   ArrayRef<unsigned int> order(orderVec);
+      //   encoding = triton::gpu::GenericEncodingAttr::get(
+      //       StoreOp.getContext(), threadShape, threadstride, elemPerThread, elemStride, subGroupShape, orderVec, 2);
 
-        // auto ptr = StoreOp.getPtr();
-        // auto type = ptr.getType();
-        // tensorType = type.cast<RankedTensorType>();
-        // auto layout = tensorType.getEncoding();
-        // newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
-        //             encoding);
-        // ptr.setType(newType);
+      //   // auto ptr = StoreOp.getPtr();
+      //   // auto type = ptr.getType();
+      //   // tensorType = type.cast<RankedTensorType>();
+      //   // auto layout = tensorType.getEncoding();
+      //   // newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
+      //   //             encoding);
+      //   // ptr.setType(newType);
 
-        auto value = StoreOp.getValue();
-        auto type = value.getType();
-        tensorType = type.cast<RankedTensorType>();
-        auto layout = tensorType.getEncoding();
-        newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
-                    encoding);
-        value.setType(newType);
+      //   auto value = StoreOp.getValue();
+      //   auto type = value.getType();
+      //   tensorType = type.cast<RankedTensorType>();
+      //   auto layout = tensorType.getEncoding();
+      //   newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
+      //               encoding);
+      //   value.setType(newType);
 
-        llvm::outs()<<"\n\nnewType: "<<newType<<"\n";
+      //   llvm::outs()<<"\n\nnewType: "<<newType<<"\n";
 
-        // auto mask = StoreOp.getMask();
-        // type = mask.getType();
-        // tensorType = type.cast<RankedTensorType>();
-        // layout = tensorType.getEncoding();
-        // newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
-        //             encoding);
-        // mask.setType(newType);
-      }else{
-      }
+      //   // auto mask = StoreOp.getMask();
+      //   // type = mask.getType();
+      //   // tensorType = type.cast<RankedTensorType>();
+      //   // layout = tensorType.getEncoding();
+      //   // newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
+      //   //             encoding);
+      //   // mask.setType(newType);
+      // }else{
+      // }
     });
 
+    // llvm::outs()<<"\n\nmodule: \n";
+    // op->print(llvm::outs());
     //todo
     return;
 

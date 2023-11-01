@@ -29,8 +29,8 @@ TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
   addConversion([&](VectorType type) -> llvm::Optional<Type> {
     return type;
   });
-  addConversion([&](RankedTensorType type) -> llvm::Optional<Type> {
-    return convertTritonTensorType(type);
+  addConversion([&](RankedTensorType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes) -> std::optional<mlir::LogicalResult> {
+    return convertTritonTensorType(type, resultTypes);
   });
   // Internally store float8 as int8
   addConversion([&](mlir::Float8E4M3B11FNUZType type) -> std::optional<Type> {
@@ -50,7 +50,8 @@ TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
     return IntegerType::get(type.getContext(), 16);
   });
 
-  addConversion([&](IndexType type) -> llvm::Optional<Type> {
+  addConversion([&](IndexType type) -> std::optional<Type> { 
+    //return type; 
     return IntegerType::get(type.getContext(), 32);
   });
 
@@ -77,17 +78,6 @@ TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
     return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, inputs)
             .getResult(0);
   });
-  addTargetMaterialization([&](OpBuilder &builder, TypeRange resultType,
-                               Value inputs,
-                               Location loc) -> Optional<SmallVector<Value>> {
-    SmallVector<Value> vec;
-    llvm::outs() << "\n\naddTargetMaterialization:\n";
-    auto ret =  builder.create<UnrealizedConversionCastOp>(loc, resultType[0], inputs)
-            .getOutputs();
-    llvm::outs() << "\n\nret:"<<ret[0]<<"\n";
-    return ret;
-
-  });
 }
 
 std::optional<mlir::LogicalResult>
@@ -95,13 +85,6 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
         triton::PointerType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes)  {
   auto pointeeType = type.getPointeeType();
   if(isa<RankedTensorType>(pointeeType)){
-    // auto tensorType = type.getPointeeType().cast<RankedTensorType>();
-    // auto blockShape = tensorType.getShape();
-
-    // llvm::outs()<<"\n\nconvertTritonPointerType type: "<<type<<"\n";
-    // return spirv::StructType::get(SmallVector<Type>(8, IntegerType::get(type.getContext(), 64)));
-
-    // llvm::SmallVectorImpl<mlir::Type> resultTypes();
     auto tensorType = pointeeType.cast<RankedTensorType>();
     Attribute layout = tensorType.getEncoding();
     SmallVector<int64_t> shape(tensorType.getShape().begin(), tensorType.getShape().end());
@@ -160,8 +143,9 @@ SmallVector<Value> unpackLLElements(
 }
 
 
-llvm::Optional<Type>
-TritonGPUToXeGPUTypeConverter::convertTritonTensorType(RankedTensorType type) {
+std::optional<mlir::LogicalResult>
+TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
+  RankedTensorType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes) {
   auto context = type.getContext();
   Attribute layout = type.getEncoding();
   SmallVector<int64_t> shape(type.getShape().begin(), type.getShape().end());
@@ -172,7 +156,9 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(RankedTensorType type) {
     unsigned numElementsPerThread = getTotalElemsPerThread(type);
     SmallVector<Type, 4> types(numElementsPerThread,
                                convertType(type.getElementType()));
-    return spirv::StructType::get(types);
+    auto newType =  spirv::StructType::get(types);
+    resultTypes.assign(1, newType);
+    return success();
   } else if(layout.isa<GenericEncodingAttr>()){
     auto genericLayout = llvm::dyn_cast<GenericEncodingAttr>(layout);
     Type elemTy = type.getElementType();
@@ -181,46 +167,70 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(RankedTensorType type) {
     if(elemTy.isa<triton::PointerType>()){
       elemTy = elemTy.cast<triton::PointerType>().getPointeeType();
       std::vector<int64_t> storeShape{32};
-      return ::mlir::triton::xegpu::TensorDescType::get(context, storeShape, elemTy, 
+      auto newType = ::mlir::triton::xegpu::TensorDescType::get(context, storeShape, elemTy, 
                                               ScatteredAttr::get(context));
+      resultTypes.assign(1, newType);
+      return success();
     }
 
     auto threadShape = genericLayout.getThreadShape();
     if(MmaFlag==2){
-      return spirv::StructType::get(SmallVector<Type>(16, 
-                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16}, elemTy)));
+      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16}, elemTy);
+      resultTypes.assign(16, newType);
+      return success();
     }
     else if(shape.size()==2 && shape[1]==32){
-      return spirv::StructType::get(SmallVector<Type>(8, 
-                      mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy)));
-    } else if(shape.size()==2 && shape[1]==64 && elemTy == f16Type){
-      return spirv::StructType::get(SmallVector<Type>(8, 
-                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy)));
-    } else if(shape.size()==2 && shape[1]==64 && elemTy == f32Type){
-      return spirv::StructType::get(SmallVector<Type>(16, 
-                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16}, elemTy)));
+      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy);
+      resultTypes.assign(16, newType);
+      llvm::outs()<<"\n\nresultTypes.size(): "<<resultTypes.size()<<"\n";
+      llvm::outs()<<"\n\nresultTypes[0]: "<<resultTypes[0]<<"\n";
+      return success();
+    } else if(shape.size()==2 && shape[1]==256 && elemTy == f16Type){
+      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy);
+      resultTypes.assign(8, newType);
+      return success();
+    } else if(shape.size()==2 && shape[1]==256 && elemTy == BFloat16Type::get(type.getContext())){
+      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, Float16Type::get(type.getContext()));
+      resultTypes.assign(8, newType);
+      return success();
+    } else if(shape.size()==2 && shape[1]==256 && elemTy == f32Type){
+      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16}, elemTy);
+      resultTypes.assign(16, newType);
+      return success();
     } else{
       unsigned simd = product_interval<unsigned>(threadShape, 0, threadShape.size() / 2);
-      return mlir::VectorType::get(simd, elemTy);
+      auto newType = mlir::VectorType::get(simd, elemTy);
+      resultTypes.assign(1, newType);
+      llvm::outs()<<"\n\nresultTypes.size(): "<<resultTypes.size()<<"\n";
+      llvm::outs()<<"\n\nresultTypes[0]: "<<resultTypes[0]<<"\n";
+      return success();
+      // return mlir::VectorType::get(simd, elemTy);
     }
   } else if (auto shared_layout =
                  layout.dyn_cast_or_null<SharedEncodingAttr>()) {
-    return type;
+    resultTypes.assign(1, type);
+    return success();
+    // return type;
   } else if (auto dotOpLayout =
                  layout.dyn_cast_or_null<DotOperandEncodingAttr>()) {
     if (dotOpLayout.getParent().isa<BlockedEncodingAttr>()) { // for parent is blocked layout
-      return type;
+      resultTypes.assign(1, type);
+      return success();
     } else if (dotOpLayout.getParent().isa<GenericEncodingAttr>()) { // for parent is generic layout
       Type elemTy = type.getElementType();
       if(shape.size()==2 && shape[1]==32){
-        return spirv::StructType::get(SmallVector<Type>(8, 
-                      mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy)));
-      } else if(shape.size()==2 && shape[1]==64){
-        return spirv::StructType::get(SmallVector<Type>(8, 
-                      mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy)));
+        auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy);
+        resultTypes.assign(16, newType);
+        return success();
+      } else if(shape.size()==2 && shape[1]==256){
+        auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy);
+        resultTypes.assign(8, newType);
+        return success();
       } 
     }else { // for parent is MMA layout
-      return type;
+      resultTypes.assign(1, type);
+      return success();
+      //return type;
     }
 
     llvm::errs() << "Unexpected dot operand layout detected in "

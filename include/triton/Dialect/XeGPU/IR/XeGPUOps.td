@@ -456,7 +456,7 @@ def XeGPU_UpdateNDOffsetOp : XeGPU_Op<"update_nd_offset", []> {
 
   let arguments = (ins
     XeGPU_TensorDesc: $TensorDesc,
-    Variadic<Index>: $offsets);
+    Variadic<I32>: $offsets);
 
   let results = (outs XeGPU_TensorDesc: $result);
 

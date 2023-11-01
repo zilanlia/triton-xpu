@@ -232,10 +232,6 @@ void TritonGPUToXeGPUPass::runOnOperation() {
           applyPartialConversion(tritonGPUModule, xeGPUFuncTarget, std::move(func_patterns))))
     return signalPassFailure();
 
-  // llvm::outs()<<"\nAfter XeGPUFuncOpConversion TritonGPUModule\n\n";
-  // tritonGPUModule->print(llvm::outs());
-  // llvm::outs()<<"\n\n";
-
   populateTritonGPUToXeGPUPatterns(xeGPUTypeConverter, patterns);
   populateReduceOpToXeGPUPatterns(xeGPUTypeConverter, patterns);
   populateScfOpToXeGPUPatterns(xeGPUTypeConverter, patterns);
@@ -243,10 +239,6 @@ void TritonGPUToXeGPUPass::runOnOperation() {
   if (failed(applyPartialConversion(tritonGPUModule, xeGPUTarget, std::move(patterns)))){
       return signalPassFailure();
   }
-
-  // llvm::outs()<<"\nAfter Conversion TritonGPUModule\n\n";
-  // tritonGPUModule->print(llvm::outs());
-  // llvm::outs()<<"\n\n";
 };
 
 namespace mlir {

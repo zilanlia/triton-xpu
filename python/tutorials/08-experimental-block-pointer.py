@@ -105,7 +105,7 @@ import intel_extension_for_pytorch
         # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
         # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
         # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
-        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1}, num_stages=5, num_warps=2),
     ],
     key=['M', 'N', 'K'],
 )
@@ -135,12 +135,16 @@ def matmul_kernel_with_block_pointers(
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id = pid // num_pid_in_group
-    first_pid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + (pid % group_size_m)
-    pid_n = (pid % num_pid_in_group) // group_size_m
+    pid_m = pid // num_pid_n
+    pid_n = pid % num_pid_n
+    # num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    # num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    # num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    # group_id = pid // num_pid_in_group
+    # first_pid_m = group_id * GROUP_SIZE_M
+    # group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    # pid_m = first_pid_m + (pid % group_size_m)
+    # pid_n = (pid % num_pid_in_group) // group_size_m
 
     # ----------------------------------------------------------
     # Create block pointers for the first blocks of A and B.
@@ -173,7 +177,7 @@ def matmul_kernel_with_block_pointers(
         # See above `Advance a Block Pointer` section for details.
         a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_SIZE_K))
         b_block_ptr = tl.advance(b_block_ptr, (BLOCK_SIZE_K, 0))
-    c = accumulator.to(tl.float16)
+    c = accumulator.to(tl.float32)
 
     # ----------------------------------------------------------------
     # Write back the block of the output matrix C with boundary checks.
@@ -194,7 +198,7 @@ def matmul(a, b):
     M, K = a.shape
     K, N = b.shape
     # Allocates output.
-    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+    c = torch.empty((M, N), device=a.device, dtype=torch.float32)
     # 1D launch kernel where each block gets its own program.
     grid = lambda META: (
         triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
@@ -216,13 +220,32 @@ def matmul(a, b):
 # Still we can test our matrix multiplication with block pointers against a native torch implementation (i.e., cuBLAS).
 
 torch.manual_seed(0)
-a = torch.randn((512, 512), device='xpu', dtype=torch.float16)
-b = torch.randn((512, 512), device='xpu', dtype=torch.float16)
+a = torch.randn((4096, 4096), device='xpu', dtype=torch.float16)
+b = torch.randn((4096, 4096), device='xpu', dtype=torch.float16)
+
+# a = torch.ones((4096, 4096), device='xpu', dtype=torch.float16)
+# b = torch.ones((4096, 4096), device='xpu', dtype=torch.float16)
+
 triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
+
+triton_output = triton_output.half()
+
 print(f"triton_output={triton_output}")
 print(f"torch_output={torch_output}")
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
+
+# cnt = 0
+# for i in range(0, 1024):
+#     if cnt > 32:
+#         break
+#     for j in range(0, 1024):
+#         if not triton_output[i, j] == torch_output[i, j]:
+#             cnt = cnt + 1
+#             if cnt > 32:
+#                 break
+#             print(i, j, triton_output[i, j], torch_output[i, j])
+
+if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")

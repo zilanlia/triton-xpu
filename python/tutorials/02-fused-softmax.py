@@ -138,9 +138,9 @@ def softmax(x):
 # This will allow us to verify that our padding mechanism works.
 
 torch.manual_seed(0)
-x = torch.randn(1, 1024, device='xpu')
-for i in range(0, 1024):
-    x[0][i] = i
+x = torch.randn(2, 1024, device='xpu')
+# for i in range(0, 1024):
+#     x[0][i] = i
 y_triton = softmax(x)
 y_torch = torch.softmax(x, axis=1)
 y_native = naive_softmax(x)

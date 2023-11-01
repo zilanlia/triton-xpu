@@ -22,7 +22,8 @@ public:
   std::optional<mlir::LogicalResult> 
     convertTritonPointerType(triton::PointerType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes);
 
-  llvm::Optional<Type> convertTritonTensorType(RankedTensorType type);
+  std::optional<mlir::LogicalResult>
+    convertTritonTensorType(RankedTensorType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes);
 
 
 private:

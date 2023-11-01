@@ -150,7 +150,7 @@
 // Constants
 #define f32_val(...) spirv::createConstantF32(loc, rewriter, __VA_ARGS__)
 #define f64_val(...) spirv::createConstantF64(loc, rewriter, __VA_ARGS__)
-#define i32_val(...) spirv::createConstantI32(loc, rewriter, __VA_ARGS__)
+#define i32_val(value) rewriter.create<spirv::ConstantOp>(loc, i32_ty, IntegerAttr::get(i32_ty, value))
 #define int_val(width, val)                                                    \
   spirv::createSPIRVIntegerConstant(rewriter, loc, width, val)
 #define idx_val(...)                                                           \

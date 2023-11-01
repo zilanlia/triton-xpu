@@ -84,7 +84,8 @@ private:
 
     //get subgroupId
     Value subgroubId = rewriter.create<::mlir::gpu::SubgroupIdOp>(loc, rewriter.getIndexType());
-    Value sgId = rewriter.create<UnrealizedConversionCastOp>(loc, i32_ty, subgroubId).getResult(0);
+    Value sgId = rewriter.create<UnrealizedConversionCastOp>(loc, i64_ty, subgroubId).getResult(0);
+    sgId = rewriter.create<spirv::UConvertOp>(loc, i32_ty, sgId);
 
     //get subgroup size and workgroup size
     auto module = op.getOperation()->getParentOfType<mlir::ModuleOp>();
@@ -126,7 +127,7 @@ private:
 
     llvm::outs()<<"\n\ntensorDescType: "<<tensorDescType<<"\n";
 
-    //1d store
+    //nd store
     Value start = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
     mlir::OpFoldResult tmp = start;
     SmallVector<mlir::OpFoldResult> NdOffset{tmp};

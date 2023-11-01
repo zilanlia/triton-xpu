@@ -38,6 +38,7 @@ public:
 
     llvm::SmallVector<mlir::Value> convertedArgs;
     for (Value values: adaptor.getInitArgs()){
+      llvm::outs() <<"\n\nvalues in forloop: "<< values<<"\n";
       if(auto *parentOp = values.getDefiningOp()){
         if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
           ValueRange tmp = (&castOp)->getInputs();
@@ -72,7 +73,65 @@ public:
 
     newOp.getBody()->erase();
     rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(), newOp.getRegion().end());
-    rewriter.replaceOp(op, newOp.getResults());
+
+    SmallVector<Value> newResult;
+    ValueRange newValues = newOp.getResults();
+    auto resultTys = op->getResultTypes();
+    mlir::OneToNTypeMapping resultMapping(resultTys);
+    llvm::SmallVector<mlir::Value> recastValues;
+    if (mlir::failed(xeGPUTypeConverter.computeTypeMapping(resultTys, resultMapping))) {
+      llvm_unreachable("It is an unexpected failure of failing to convert the result types.");
+      // newValues = buildUnrealizedCast(rewriter, op->getResultTypes(), newValues);
+    } else {
+      mlir::TypeRange originalTypes = resultMapping.getOriginalTypes();
+      recastValues.reserve(originalTypes.size());
+      auto convertedValueIt = newValues.begin();
+      for (auto [idx, originalType] : llvm::enumerate(originalTypes)) {
+        mlir::TypeRange convertedTypes = resultMapping.getConvertedTypes(idx);
+        size_t numConvertedValues = convertedTypes.size();
+
+        // Non-identity conversion: cast back to source type.
+        mlir::ValueRange tmp{convertedValueIt, convertedValueIt + numConvertedValues};
+        mlir::ValueRange recastValue = rewriter.create<mlir::UnrealizedConversionCastOp>(loc,
+            originalType, tmp).getResults();
+        assert(recastValue.size() == 1);
+        recastValues.push_back(recastValue.front());
+
+        convertedValueIt += numConvertedValues;
+        llvm::outs()<<"\n\nrecastValue.front(): "<<recastValue.front()<<"\n";
+        llvm::outs()<<"\n\nnumConvertedValue: "<<numConvertedValues<<"\n";
+      }
+    }
+    rewriter.replaceOp(op, recastValues);
+
+    //.getResults();
+    
+    // mlir::ValueRange newValueRange0(newValues.begin(), newValues.begin() + 16);
+    // Value arg0 = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys[0], newValueRange0).getODSOperands(0)[0];
+    // newResult.push_back(arg0);
+
+    // mlir::ValueRange newValueRange1(newValues.begin() + 16, newValues.begin() + 24);
+    // Value arg1 = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys[1], newValueRange1).getODSOperands(0)[0];
+    // newResult.push_back(arg1);
+
+    // mlir::ValueRange newValueRange2(newValues.begin() + 24, newValues.begin() + 32);
+    // Value arg2 = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys[2], newValueRange2).getODSOperands(0)[0];
+    // newResult.push_back(arg2);
+
+    // mlir::ValueRange newResultRange(newResult);
+    // Value args = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newResultRange).getODSOperands(0)[0];
+
+    // llvm::outs()<<"\n\narg0 : "<<arg0<<"\n";
+    // llvm::outs()<<"\n\narg1 : "<<arg1<<"\n";
+    // llvm::outs()<<"\n\narg2 : "<<arg2<<"\n";
+    // llvm::outs()<<"\n\nargs : "<<args<<"\n";
+
+    // llvm::outs()<<"\n\nresultTys[0] : "<<resultTys[0]<<"\n";
+    // llvm::outs()<<"\n\nresultTys[1] : "<<resultTys[1]<<"\n";
+    // llvm::outs()<<"\n\nresultTys[2] : "<<resultTys[2]<<"\n";
+
+    // rewriter.replaceOp(op, newResultRange);
+    // rewriter.replaceOp(op, args);
 
     return success();
   }
@@ -87,6 +146,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     llvm::SmallVector<mlir::Value> convertedResults;
     for (Value values: adaptor.getResults()){
+      llvm::outs()<<"\n\nyield values: "<<values<<"\n";
       if(auto *parentOp = values.getDefiningOp()){
         if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
           ValueRange tmp = (&castOp)->getInputs();
@@ -100,6 +160,8 @@ public:
     }
 
     auto newOp = rewriter.create<mlir::scf::YieldOp>(op.getLoc(), convertedResults).getResults();
+
+    llvm::outs()<<"\n\nyield newOp.size(): "<<newOp.size()<<"\n";
 
     rewriter.replaceOp(op, newOp);
     return mlir::success();
