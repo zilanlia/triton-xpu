@@ -1078,7 +1078,7 @@ Attribute GenericEncodingAttr::parse(AsmParser &parser, Type type) {
   SmallVector<unsigned> elemStride;
   SmallVector<unsigned> subGroupShape;
   SmallVector<unsigned> order;
-  unsigned isLayoutUpdated;
+  unsigned mmaFlag;
 
   for (const NamedAttribute &attr : dict) {
     if (attr.getName() == "threadShape") {
@@ -1109,8 +1109,8 @@ Attribute GenericEncodingAttr::parse(AsmParser &parser, Type type) {
     } else if (attr.getName() == "order") {
       if (parseIntArrayAttr(parser, attr, order, "order").failed())
         return {};
-    } else if (attr.getName() == "isLayoutUpdated") {
-      if (parseIntAttrValue(parser, attr.getValue(), isLayoutUpdated, 
+    } else if (attr.getName() == "mmaFlag") {
+      if (parseIntAttrValue(parser, attr.getValue(), mmaFlag, 
                             "Indicates whether the layout has been propagated")
               .failed())
         return 0;
@@ -1122,7 +1122,7 @@ Attribute GenericEncodingAttr::parse(AsmParser &parser, Type type) {
   }
 
   auto ret = parser.getChecked<GenericEncodingAttr>(
-      parser.getContext(), threadShape, threadStride, elemPerThread, elemStride, subGroupShape, order, isLayoutUpdated);
+      parser.getContext(), threadShape, threadStride, elemPerThread, elemStride, subGroupShape, order, mmaFlag);
   return ret;
 }
 
@@ -1134,7 +1134,7 @@ void GenericEncodingAttr::print(mlir::AsmPrinter &printer) const {
           << ", elemStride = [" << getElemStride() << "]"
           << ", subGroupShape = [" << getSubGroupShape() << "]"
           << ", order = [" << getOrder() << "]"
-          << ", isLayoutUpdated = "<< getIsLayoutUpdated()
+          << ", mmaFlag = "<< getMmaFlag()
           << "}>";
 }
 

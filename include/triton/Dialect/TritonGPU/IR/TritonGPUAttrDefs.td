@@ -477,16 +477,16 @@ def GenericEncodingAttr : DistributedEncoding<"GenericEncoding"> {
     ArrayRefParameter<"unsigned">:$elemStride,
     ArrayRefParameter<"unsigned">:$subGroupShape,
     ArrayRefParameter<"unsigned">:$order,
-    "unsigned":$isLayoutUpdated
+    "unsigned":$mmaFlag
   );
 
    let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = extraBaseClassDeclaration # [{
-      GenericEncodingAttr updateIsLayoutUpdated(unsigned isLayoutUpdated) {
+      GenericEncodingAttr updatemmaFlag(unsigned mmaFlag) {
         MLIRContext *ctx = getContext();
         return GenericEncodingAttr::get(ctx, getThreadShape(), getThreadStride(), getElemPerThread(), 
-                                    getElemStride(), getSubGroupShape(), getOrder(), isLayoutUpdated);
+                                    getElemStride(), getSubGroupShape(), getOrder(), mmaFlag);
       }
   }];
 }

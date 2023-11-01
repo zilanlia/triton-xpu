@@ -58,7 +58,7 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
     ArrayRef<unsigned int> subGroupShape(subGroupShapeVec);
     ArrayRef<unsigned int> order(orderVec);
     Attribute encoding = triton::gpu::GenericEncodingAttr::get(
-        this->context, threadShape, threadstride, elemPerThread, elemStride, subGroupShape, orderVec, -1);
+        this->context, threadShape, threadstride, elemPerThread, elemStride, subGroupShape, order, -1);
     return RankedTensorType::get(shape, tensorType.getElementType(), encoding);
   });
 

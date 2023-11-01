@@ -51,8 +51,7 @@ TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
   });
 
   addConversion([&](IndexType type) -> std::optional<Type> { 
-    //return type; 
-    return IntegerType::get(type.getContext(), 32);
+    return IntegerType::get(type.getContext(), 64);
   });
 
   addConversion([&](IntegerType type) -> llvm::Optional<Type> {
@@ -162,7 +161,7 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
   } else if(layout.isa<GenericEncodingAttr>()){
     auto genericLayout = llvm::dyn_cast<GenericEncodingAttr>(layout);
     Type elemTy = type.getElementType();
-    auto MmaFlag = genericLayout.getIsLayoutUpdated();
+    auto MmaFlag = genericLayout.getMmaFlag();
 
     if(elemTy.isa<triton::PointerType>()){
       elemTy = elemTy.cast<triton::PointerType>().getPointeeType();
@@ -204,13 +203,11 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
       llvm::outs()<<"\n\nresultTypes.size(): "<<resultTypes.size()<<"\n";
       llvm::outs()<<"\n\nresultTypes[0]: "<<resultTypes[0]<<"\n";
       return success();
-      // return mlir::VectorType::get(simd, elemTy);
     }
   } else if (auto shared_layout =
                  layout.dyn_cast_or_null<SharedEncodingAttr>()) {
     resultTypes.assign(1, type);
     return success();
-    // return type;
   } else if (auto dotOpLayout =
                  layout.dyn_cast_or_null<DotOperandEncodingAttr>()) {
     if (dotOpLayout.getParent().isa<BlockedEncodingAttr>()) { // for parent is blocked layout
@@ -230,7 +227,6 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
     }else { // for parent is MMA layout
       resultTypes.assign(1, type);
       return success();
-      //return type;
     }
 
     llvm::errs() << "Unexpected dot operand layout detected in "

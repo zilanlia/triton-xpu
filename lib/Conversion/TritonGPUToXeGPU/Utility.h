@@ -135,14 +135,6 @@
 #define v64f16Type mlir::VectorType::get(64, f16Type)
 #define v64i32Type mlir::VectorType::get(64, i32Type)
 #define v64f32Type mlir::VectorType::get(64, f32Type)
-#define v64i64Type mlir::VectorType::get(64, i64Type)
-#define v128i16Type mlir::VectorType::get(128, i16Type)
-#define v128f16Type mlir::VectorType::get(128, f16Type)
-#define v128i32Type mlir::VectorType::get(128, i32Type)
-#define v256i32Type mlir::VectorType::get(256, i32Type)
-#define v256f32Type mlir::VectorType::get(256, f32Type)
-#define v128f32Type mlir::VectorType::get(128, f32Type)
-#define v128i64Type mlir::VectorType::get(128, i64Type)
 #define fp32PtrType spirv::PointerType::get(f32Type, spirv::StorageClass::CrossWorkgroup)
 #define fp16PtrType spirv::PointerType::get(f16Type, spirv::StorageClass::CrossWorkgroup)
 #define i16PtrType spirv::PointerType::get(i16Type, spirv::StorageClass::CrossWorkgroup)
@@ -160,15 +152,9 @@
 #define i8_val(value) rewriter.create<spirv::ConstantOp>(loc, i8_ty, rewriter.getI8IntegerAttr(value))
 #define i1_val(value) rewriter.create<spirv::ConstantOp>(loc, i1_ty, rewriter.getBoolAttr(value))
 
-#define dpasNum 16
-
 // Attributes
 #define i32_arr_attr(...) rewriter.getI32ArrayAttr({__VA_ARGS__})
 #define i64_arr_attr(...) rewriter.getI64ArrayAttr({__VA_ARGS__})
-
-//flag
-#define supportDpas 1
-#define supportJointMatrix 0
 
 namespace mlir {
 namespace triton {

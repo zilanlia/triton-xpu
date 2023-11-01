@@ -24,39 +24,80 @@
 #include <map>
 
 using namespace mlir;
+using namespace mlir::scf;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 using ::mlir::triton::gpu::GenericEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 
-void generateDenGraph(std::vector<mlir::Operation *> ops, std::map<mlir::Operation *, std::vector<mlir::Operation *>>& predecessorOps,
-                                                          std::map<mlir::Operation *, std::vector<mlir::Operation *>>& successorOps){
+using opsVectorTy = std::vector<mlir::Operation *>;
+using opsQueueTy = std::queue<mlir::Operation *>;
+using opsSetTy = std::set<mlir::Operation *>;
+using opsGraphTy = std::map<mlir::Operation *, std::set<mlir::Operation *>>;
+
+bool checkType(Type type){
+  if(isa<RankedTensorType>(type)){
+    return true;
+  } else if(isa<triton::PointerType>(type)){
+    auto ptrType = type.cast<triton::PointerType>();
+    auto pointeeType = ptrType.getPointeeType();
+    if(isa<RankedTensorType>(pointeeType)){
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void createGraph(opsVectorTy ops, opsGraphTy& preOpsGraph, opsGraphTy& sucOpsGraph){
   int opsNum = ops.size();
   for(int i = 0; i < opsNum; i++){
     auto op = ops[i];
-    if(predecessorOps.count(op) == 0){
-      predecessorOps[op] = {};
+    if(preOpsGraph.count(op) == 0){
+      preOpsGraph[op] = std::set<mlir::Operation *>();
+      sucOpsGraph[op] = std::set<mlir::Operation *>();
     }
 
-    mlir::scf::ForOp forOp = llvm::dyn_cast<mlir::scf::ForOp>(op->getParentOp());
     for(auto operand : op->getOperands()){
-      if(mlir::Operation *parentOp = operand.getDefiningOp()){
-        predecessorOps[op].push_back(parentOp);
+      auto type = operand.getType();
+      //llvm::outs() << "\n\n[createGraph]type: "<<type<<"\n";
+      if(!checkType(type)){
+        continue;
+      }
 
-        if(successorOps.count(op) == 0){
-          successorOps[parentOp] = {};
+      if(Operation *parentOp = operand.getDefiningOp()){
+        //use the result of forOp
+        if(auto forOp = llvm::dyn_cast<ForOp>(parentOp)){
+          auto results = forOp->getResults(); 
+          for(unsigned i = 0; i < results.size(); ++i){
+            if(operand == results[i]){
+              auto operandInForOp = forOp.getOperands()[i + 3];
+              auto *forLoopParentOp = operandInForOp.getDefiningOp();
+              preOpsGraph[op].insert(forLoopParentOp);
+              sucOpsGraph[forLoopParentOp].insert(op);
+              break;
+            }
+          }
+        } else {
+          preOpsGraph[op].insert(parentOp);
+
+          if(sucOpsGraph.count(op) == 0){
+            sucOpsGraph[parentOp] = {};
+          }
+          sucOpsGraph[parentOp].insert(op);
         }
-        successorOps[parentOp].push_back(op);
-      } 
-      else if(forOp) 
-      {
-        predecessorOps[op].push_back(forOp);
+      }
 
+      //use the input of forOp;
+      if(auto forOp = llvm::dyn_cast<ForOp>(op->getParentOp())) 
+      {
+        //llvm::outs()<<"[forOp related Ops] op: "<<*op<<"\n";
         for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
           if (operand == forOp.getRegionIterArgs()[i]) {
             auto operandInForOp = forOp.getOperands()[i + 3];
-
             auto *forLoopParentOp = operandInForOp.getDefiningOp();
-            predecessorOps[op].push_back(forLoopParentOp);
+            preOpsGraph[op].insert(forLoopParentOp);
+            sucOpsGraph[forLoopParentOp].insert(op);
+            //llvm::outs()<<"[forOp related Ops] i: "<<i<<"\n";
             break;
           }
         }
@@ -65,170 +106,187 @@ void generateDenGraph(std::vector<mlir::Operation *> ops, std::map<mlir::Operati
   }
 }
 
-void propagationLayout(MLIRContext *context, mlir::Operation *op, Attribute &encoding, 
-                        std::map<mlir::Operation *, std::vector<mlir::Operation *>> &predecessorOps,
-                        std::set<mlir::Operation *>& opsSet){
-  opsSet.erase(op);
-  if(predecessorOps[op].size() == 0){
-    return;
-  }
+void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &encoding, 
+                        opsGraphTy &preOpsGraph, opsGraphTy &sucOpsGraph, opsSetTy& opsSet){
+  while(!opsQueue.empty()){
+    auto op = opsQueue.front();
+    //llvm::outs() << "\n\n[propagateLayout]op: "<<*op<<"\n";
+    opsSet.erase(op);
+    opsQueue.pop();
 
-  for(auto preOp : predecessorOps[op]){
-    //process forloop result type
-    if(auto forOp = llvm::dyn_cast<mlir::scf::ForOp>(preOp)){
-      Type newType;
-      for(auto operand : op->getOperands()){
-        for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
-          if (operand == forOp.getRegionIterArgs()[i]){
-            auto operandInForOp = forOp.getOperands()[i + 3];
-            auto resultInForOp = forOp.getODSResults(0)[i];
-            auto curTensorType = operandInForOp.getType().cast<RankedTensorType>();
-            auto newType = RankedTensorType::get(curTensorType.getShape(), curTensorType.getElementType(),
-                          encoding);
-            operandInForOp.setType(newType);
-            resultInForOp.setType(newType);
-            break;
-          }
-        }
-      }
-      //update op in for loop(eg: Loadop)
-      for(auto operand : op->getOperands()){
-        auto curTensorType = operand.getType().cast<RankedTensorType>();
-        auto curLayout = curTensorType.getEncoding();
-
-        if (auto genericLayout = curLayout.dyn_cast<GenericEncodingAttr>()){
-          auto newType = RankedTensorType::get(curTensorType.getShape(), curTensorType.getElementType(),
-                      encoding);
-          operand.setType(newType);
-        }
-      }
-    } else if(auto ConstantOp = dyn_cast<arith::ConstantOp>(preOp)){
-      auto curType = ConstantOp.getValue().getType();
-
-      if (curType.isa<mlir::RankedTensorType>()){
+    if(auto ConstantOp = dyn_cast<arith::ConstantOp>(op)){
+      auto type = ConstantOp.getValue().getType();
+      //llvm::outs() << "\n\n[propagateLayout ConstantOp]type: "<<type<<"\n";
+      if (type.isa<mlir::RankedTensorType>()){
         auto value = ConstantOp.getValue().dyn_cast<DenseElementsAttr>();
-        auto curTensorType = curType.cast<RankedTensorType>();
-        auto currlayout =  curTensorType.getEncoding();
-        if(currlayout.dyn_cast<GenericEncodingAttr>().getIsLayoutUpdated() == 1){
-          auto newType = RankedTensorType::get(curTensorType.getShape(), curTensorType.getElementType(),
-            encoding);
+        auto tensorType = type.cast<RankedTensorType>();
+        auto layout =  tensorType.getEncoding();
+        auto result = ConstantOp.getResult();
+        if(layout.dyn_cast<GenericEncodingAttr>().getMmaFlag() == -1){
+          auto newType = RankedTensorType::get(tensorType.getShape(), 
+                  tensorType.getElementType(), encoding);
           value = value.reshape(newType);
           ConstantOp.setValueAttr(value);
+          result.setType(newType);
         }
       }
-    } else if(auto cvtOp = llvm::dyn_cast<triton::gpu::ConvertLayoutOp>(preOp)){
-      //break;
     } else {
-      for (auto preOperand : preOp->getResults()){
-        auto curType = preOperand.getType();
-        if (curType.isa<mlir::RankedTensorType>()){
-          auto curTensorType = curType.cast<RankedTensorType>();
-          auto currlayout = curTensorType.getEncoding();
-          if(auto currDotLayout = currlayout.dyn_cast<DotOperandEncodingAttr>()){
-
-          }
-          else if(auto curSliceLayout = currlayout.dyn_cast<SliceEncodingAttr>()){
-            unsigned dim = curSliceLayout.getDim();
-            auto curGenericLayout = curSliceLayout.getParent().dyn_cast<GenericEncodingAttr>();
-            if(curGenericLayout.getIsLayoutUpdated() == 1){
-              auto newGenericLayout = curGenericLayout.updateIsLayoutUpdated(2);
-              auto newSliceLayout = SliceEncodingAttr::get(context, dim, newGenericLayout);
-              auto newType = RankedTensorType::get(curTensorType.getShape(), curTensorType.getElementType(),
-                newSliceLayout);
-              preOperand.setType(newType);
+      for(auto operand : op->getOperands()){
+        Type type = operand.getType();
+        bool isPointerType = 0;
+        int addr;
+        //llvm::outs() << "\n\n[propagateLayout]type: "<<type<<"\n";
+        if(isa<triton::PointerType>(type)){
+          addr = type.cast<triton::PointerType>().getAddressSpace();
+          type = type.cast<triton::PointerType>().getPointeeType();
+          isPointerType = 1;
+        }
+        //llvm::outs() << "\n\n[propagateLayout]after convert pointType : "<<type<<"\n";
+        if(type.isa<mlir::RankedTensorType>()){
+          auto tensorType = type.cast<RankedTensorType>();
+          auto layout = tensorType.getEncoding();
+          if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
+            if(genericLayout.getMmaFlag() == -1){
+              auto newType = RankedTensorType::get(tensorType.getShape(), 
+                    tensorType.getElementType(), encoding);
+              if(isPointerType){
+                auto pointerType = triton::PointerType::get(newType, addr);
+                operand.setType(pointerType);
+              } else {
+                operand.setType(newType);
+              }
             }
           }
-          else if(currlayout.dyn_cast<GenericEncodingAttr>().getIsLayoutUpdated() == 1){
-            auto newType = RankedTensorType::get(curTensorType.getShape(), curTensorType.getElementType(),
-              encoding);
-            preOperand.setType(newType);
-          }
         }
       }
-    }
 
-    propagationLayout(context, preOp, encoding, predecessorOps, opsSet);
-  }
-}
-
-bool updateLayout(mlir::Operation *op, mlir::Value* operand,
-                                  std::map<mlir::Operation *,std::vector<mlir::Operation *>> &Ops){
-  for(auto preOp : Ops[op]){
-    for (auto preOperand : preOp->getResults()){
-      auto curType = operand->getType();
-      auto type = preOperand.getType();
-      if (curType.isa<mlir::RankedTensorType>()){
-        auto tensorType = type.cast<RankedTensorType>();
-        if(auto curTensorType = curType.cast<RankedTensorType>()){
-          auto layout = tensorType.getEncoding();
-          auto generic = layout.dyn_cast<GenericEncodingAttr>();
-          if(generic.getIsLayoutUpdated() == 2){
-            auto newType = RankedTensorType::get(curTensorType.getShape(), curTensorType.getElementType(),
-              layout);
-
-            operand->setType(newType);
-            return true;
-          }
-        } else {
-          auto layout = tensorType.getEncoding();
-          auto generic = layout.dyn_cast<GenericEncodingAttr>();
-          if(generic.getIsLayoutUpdated() == 2){
-            auto newType = RankedTensorType::get(curTensorType.getShape(), curType,
-              layout);
-
-            operand->setType(newType);
-            return true;
-          }
+      for(auto result : op->getResults()){
+        Type type = result.getType();
+        bool isPointerType = 0;
+        int addr;
+        //llvm::outs() << "\n\n[propagateLayout]type: "<<type<<"\n";
+        if(isa<triton::PointerType>(type)){
+          addr = type.cast<triton::PointerType>().getAddressSpace();
+          type = type.cast<triton::PointerType>().getPointeeType();
+          isPointerType = 1;
         }
-      }
-    }
-  }
-
-  return false;
-}
-
-bool updateLayout(mlir::Operation *op, DenseElementsAttr value,
-                                  std::map<mlir::Operation *,std::vector<mlir::Operation *>> &Ops){
-  for(auto preOp : Ops[op]){
-    for (auto preOperand : preOp->getResults()){
-      auto type = preOperand.getType();
-      
-      if (type.isa<mlir::RankedTensorType>()){
-        auto tensorType = type.cast<RankedTensorType>();
-        auto layout = tensorType.getEncoding();
-        auto generic = layout.dyn_cast<GenericEncodingAttr>();
-        if(generic.getIsLayoutUpdated() == 2){
-
-          if(auto ConstantOp = dyn_cast<arith::ConstantOp>(op)){
-            auto curType = ConstantOp.getValue().getType();
-            Type newType;
-            if (curType.isa<mlir::RankedTensorType>()){
-              auto curTensorType = curType.cast<RankedTensorType>();
-              newType = RankedTensorType::get(curTensorType.getShape(), curTensorType.getElementType(),
-                        layout);
-            }else{
-              newType = RankedTensorType::get(tensorType.getShape(), curType,
-                        layout);
+        //llvm::outs() << "\n\n[propagateLayout]after convert pointType : "<<type<<"\n";
+        if(type.isa<mlir::RankedTensorType>()){
+          auto tensorType = type.cast<RankedTensorType>();
+          auto layout = tensorType.getEncoding();
+          if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
+            if(genericLayout.getMmaFlag() == -1){
+              auto newType = RankedTensorType::get(tensorType.getShape(), 
+                    tensorType.getElementType(), encoding);
+              if(isPointerType){
+                auto pointerType = triton::PointerType::get(newType, addr);
+                result.setType(pointerType);
+              } else {
+                result.setType(newType);
+              }
             }
-            value = value.reshape(newType.cast<ShapedType>());
-            ConstantOp.setValueAttr(value);
           }
-          return true;
         }
       }
     }
-  }
 
-  return false;
+    //llvm::outs() << "\n\n[propagateLayout]after update layout: "<<*op<<"\n";
+
+    for(auto preOp : preOpsGraph[op]){
+      if(opsSet.count(preOp) == 1){
+        opsQueue.push(preOp);
+      }
+    }
+    for(auto sucOp : sucOpsGraph[op]){
+      if(opsSet.count(sucOp) == 1){
+        opsQueue.push(sucOp);
+      }
+    }
+  }
 }
 
+void setDotOpLayout(MLIRContext *context, Operation *curr){
+  if (auto dotOp = dyn_cast<triton::DotOp>(curr)) {
+    //Need to be inferred from hardware info
+    const std::vector<unsigned int> aThreadShapeVec{2, 8, 8, 4};
+    const std::vector<unsigned int> aThreadStrideVec{1, 2, 32, 0};
+    const std::vector<unsigned int> aElemPerThreadVec{4, 2, 4, 2};
+    const std::vector<unsigned int> aElemStrideVec{2, 1, 8, 16};
+    const std::vector<unsigned int> aSubGroupShapeVec{4, 4};
+    const std::vector<unsigned int> aOrderVec{1, 0, 1, 0};
+    ArrayRef<unsigned int> aThreadShape(aThreadShapeVec);
+    ArrayRef<unsigned int> aThreadstride(aThreadStrideVec);
+    ArrayRef<unsigned int> aElemPerThread(aElemPerThreadVec);
+    ArrayRef<unsigned int> aElemStride(aElemStrideVec);
+    ArrayRef<unsigned int> aSubGroupShape(aSubGroupShapeVec);
+    ArrayRef<unsigned int> aOrder(aOrderVec);
+    auto encoding = triton::gpu::GenericEncodingAttr::get(
+        dotOp.getContext(), aThreadShape, aThreadstride, aElemPerThread, aElemStride, aSubGroupShape, aOrder, 0);
+    auto dotLayout = triton::gpu::DotOperandEncodingAttr::get(context, 0, encoding, 0);
+
+    auto A = dotOp.getA();
+    auto aTensorType = A.getType().dyn_cast<RankedTensorType>();
+    auto newType = RankedTensorType::get(aTensorType.getShape(), aTensorType.getElementType(),
+                dotLayout);
+    llvm::outs()<<"\n\n[DotOp]matA newType: "<<newType<<"\n";
+    A.setType(newType);
+
+    const std::vector<unsigned int> bThreadShapeVec{1, 16, 8, 4};
+    const std::vector<unsigned int> bThreadStrideVec{0, 1, 0, 64};
+    const std::vector<unsigned int> bElemPerThreadVec{8, 1, 4, 4};
+    const std::vector<unsigned int> bElemStrideVec{1, 0, 8, 16};
+    const std::vector<unsigned int> bSubGroupShapeVec{4, 4};
+    const std::vector<unsigned int> bOrderVec{1, 0, 1, 0};
+    ArrayRef<unsigned int> bThreadShape(bThreadShapeVec);
+    ArrayRef<unsigned int> bThreadstride(bThreadStrideVec);
+    ArrayRef<unsigned int> bElemPerThread(bElemPerThreadVec);
+    ArrayRef<unsigned int> bElemStride(bElemStrideVec);
+    ArrayRef<unsigned int> bSubGroupShape(bSubGroupShapeVec);
+    ArrayRef<unsigned int> bOrder(bOrderVec);
+    encoding = triton::gpu::GenericEncodingAttr::get(
+        dotOp.getContext(), bThreadShape, bThreadstride, bElemPerThread, bElemStride, bSubGroupShape, bOrder, 1);
+    dotLayout = triton::gpu::DotOperandEncodingAttr::get(context, 1, encoding, 0);
+
+    auto B = dotOp.getB();
+    auto bTensorType = B.getType().dyn_cast<RankedTensorType>();
+    newType = RankedTensorType::get(bTensorType.getShape(), bTensorType.getElementType(),
+                dotLayout);
+    llvm::outs()<<"\n\n[DotOp]matB newType: "<<newType<<"\n";
+    B.setType(newType);
+
+    const std::vector<unsigned int> cThreadShapeVec{1, 16, 8, 4};
+    const std::vector<unsigned int> cThreadStrideVec{0, 1, 32, 64};
+    const std::vector<unsigned int> cElemPerThreadVec{16, 1, 2, 4};
+    const std::vector<unsigned int> cElemStrideVec{1, 0, 16, 16};
+    const std::vector<unsigned int> cSubGroupShapeVec{4, 4};
+    const std::vector<unsigned int> cOrderVec{1, 0, 1, 0};
+    ArrayRef<unsigned int> cThreadShape(cThreadShapeVec);
+    ArrayRef<unsigned int> cThreadstride(cThreadStrideVec);
+    ArrayRef<unsigned int> cElemPerThread(cElemPerThreadVec);
+    ArrayRef<unsigned int> cElemStride(cElemStrideVec);
+    ArrayRef<unsigned int> cSubGroupShape(cSubGroupShapeVec);
+    ArrayRef<unsigned int> cOrder(cOrderVec);
+    encoding = triton::gpu::GenericEncodingAttr::get(
+        dotOp.getContext(), cThreadShape, cThreadstride, cElemPerThread, cElemStride, cSubGroupShape, cOrder, 2);
+    // dotLayout = triton::gpu::DotOperandEncodingAttr::get(context, 1, encoding, 0);
+
+    auto C = dotOp.getC();
+    auto cTensorType = C.getType().dyn_cast<RankedTensorType>();
+    newType = RankedTensorType::get(cTensorType.getShape(), cTensorType.getElementType(),
+                encoding);
+    llvm::outs()<<"\n\n[DotOp]matC/matD newType: "<<newType<<"\n";
+    C.setType(newType);
+
+    auto D = dotOp.getD();
+    D.setType(newType);
+  }
+}
 
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
 class TritonGPULayoutPropagationPass
-    : public TritonGPULayoutPropagationBase<
-          TritonGPULayoutPropagationPass> {
+    : public TritonGPULayoutPropagationBase<TritonGPULayoutPropagationPass> {
 public:
   TritonGPULayoutPropagationPass() = default;
 
@@ -236,207 +294,100 @@ public:
     MLIRContext *context = &getContext();
     Operation *op = getOperation();
 
-    RankedTensorType newType;
-    GenericEncodingAttr newGenericLayout;
-    Attribute encoding;
-    RankedTensorType tensorType;
-
-    std::vector<mlir::Operation *> allOpsInModule;
-    std::set<mlir::Operation *> opsSet;
-    std::map<mlir::Operation *, std::vector<mlir::Operation *>> predecessorOps;
-    std::map<mlir::Operation *, std::vector<mlir::Operation *>> successorOps;
+    opsVectorTy opsVector;
+    opsSetTy opsSet;
+    opsGraphTy  preOpsGraph;
+    opsGraphTy sucOpsGraph;
 
     //update layout for dotOp
     op->walk([&](Operation *curr) {
-      if (auto dotOp = dyn_cast<triton::DotOp>(curr)) {
-        const std::vector<unsigned int> aThreadShapeVec{2, 8, 8, 4};
-        const std::vector<unsigned int> aThreadStrideVec{1, 2, 32, 0};
-        const std::vector<unsigned int> aElemPerThreadVec{4, 2, 4, 2};
-        const std::vector<unsigned int> aElemStrideVec{2, 1, 8, 16};
-        const std::vector<unsigned int> aSubGroupShapeVec{4, 4};
-        const std::vector<unsigned int> aOrderVec{1, 0, 1, 0};
-        ArrayRef<unsigned int> aThreadShape(aThreadShapeVec);
-        ArrayRef<unsigned int> aThreadstride(aThreadStrideVec);
-        ArrayRef<unsigned int> aElemPerThread(aElemPerThreadVec);
-        ArrayRef<unsigned int> aElemStride(aElemStrideVec);
-        ArrayRef<unsigned int> aSubGroupShape(aSubGroupShapeVec);
-        ArrayRef<unsigned int> aOrder(aOrderVec);
-        auto encoding = triton::gpu::GenericEncodingAttr::get(
-            dotOp.getContext(), aThreadShape, aThreadstride, aElemPerThread, aElemStride, aSubGroupShape, aOrderVec, 0);
-        auto dotLayout = triton::gpu::DotOperandEncodingAttr::get(context, 0, encoding, 0);
-
-        auto A = dotOp.getA();
-        auto aType = A.getType();
-        llvm::outs()<<"\n\naType: "<<aType<<"\n";
-        auto aTensorType = aType.dyn_cast<RankedTensorType>();
-        newType = RankedTensorType::get(aTensorType.getShape(), aTensorType.getElementType(),
-                    dotLayout);
-        llvm::outs()<<"\n\nnewType: "<<newType<<"\n";
-        A.setType(newType);
-
-        const std::vector<unsigned int> bThreadShapeVec{1, 16, 8, 4};
-        const std::vector<unsigned int> bThreadStrideVec{0, 1, 0, 64};
-        const std::vector<unsigned int> bElemPerThreadVec{16, 1, 2, 4};
-        const std::vector<unsigned int> bElemStrideVec{1, 0, 16, 16};
-        const std::vector<unsigned int> bSubGroupShapeVec{4, 4};
-        const std::vector<unsigned int> bOrderVec{1, 0, 1, 0};
-        ArrayRef<unsigned int> bThreadShape(bThreadShapeVec);
-        ArrayRef<unsigned int> bThreadstride(bThreadStrideVec);
-        ArrayRef<unsigned int> bElemPerThread(bElemPerThreadVec);
-        ArrayRef<unsigned int> bElemStride(bElemStrideVec);
-        ArrayRef<unsigned int> bSubGroupShape(bSubGroupShapeVec);
-        ArrayRef<unsigned int> bOorder(bOrderVec);
-        encoding = triton::gpu::GenericEncodingAttr::get(
-            dotOp.getContext(), bThreadShape, bThreadstride, bElemPerThread, bElemStride, bSubGroupShape, bOrderVec, 1);
-        dotLayout = triton::gpu::DotOperandEncodingAttr::get(context, 1, encoding, 0);
-
-        auto B = dotOp.getB();
-        auto bType = B.getType();
-        llvm::outs()<<"\n\nbType: "<<bType<<"\n";
-        auto bTensorType = bType.dyn_cast<RankedTensorType>();
-        newType = RankedTensorType::get(bTensorType.getShape(), bTensorType.getElementType(),
-                    dotLayout);
-        llvm::outs()<<"\n\nnewType: "<<newType<<"\n";
-        B.setType(newType);
-      }
-      // else if (auto StoreOp = dyn_cast<triton::StoreOp>(curr)) {
-      //   const std::vector<unsigned int> threadShapeVec{1, 16, 8, 4};
-      //   const std::vector<unsigned int> threadStrideVec{0, 1, 32, 64};
-      //   const std::vector<unsigned int> elemPerThreadVec{8, 1, 4, 4};
-      //   const std::vector<unsigned int> elemStrideVec{1, 0, 8, 16};
-      //   const std::vector<unsigned int> subGroupShapeVec{4, 4, 0, 0};
-      //   const std::vector<unsigned int> orderVec{1, 0, 1, 0};
-      //   ArrayRef<unsigned int> threadShape(threadShapeVec);
-      //   ArrayRef<unsigned int> threadstride(threadStrideVec);
-      //   ArrayRef<unsigned int> elemPerThread(elemPerThreadVec);
-      //   ArrayRef<unsigned int> elemStride(elemStrideVec);
-      //   ArrayRef<unsigned int> subGroupShape(subGroupShapeVec);
-      //   ArrayRef<unsigned int> order(orderVec);
-      //   encoding = triton::gpu::GenericEncodingAttr::get(
-      //       StoreOp.getContext(), threadShape, threadstride, elemPerThread, elemStride, subGroupShape, orderVec, 2);
-
-      //   // auto ptr = StoreOp.getPtr();
-      //   // auto type = ptr.getType();
-      //   // tensorType = type.cast<RankedTensorType>();
-      //   // auto layout = tensorType.getEncoding();
-      //   // newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
-      //   //             encoding);
-      //   // ptr.setType(newType);
-
-      //   auto value = StoreOp.getValue();
-      //   auto type = value.getType();
-      //   tensorType = type.cast<RankedTensorType>();
-      //   auto layout = tensorType.getEncoding();
-      //   newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
-      //               encoding);
-      //   value.setType(newType);
-
-      //   llvm::outs()<<"\n\nnewType: "<<newType<<"\n";
-
-      //   // auto mask = StoreOp.getMask();
-      //   // type = mask.getType();
-      //   // tensorType = type.cast<RankedTensorType>();
-      //   // layout = tensorType.getEncoding();
-      //   // newType = RankedTensorType::get(tensorType.getShape(), tensorType.getElementType(),
-      //   //             encoding);
-      //   // mask.setType(newType);
-      // }else{
-      // }
+      setDotOpLayout(context, curr);
     });
 
-    // llvm::outs()<<"\n\nmodule: \n";
-    // op->print(llvm::outs());
-    //todo
-    return;
-
-    op->walk([&](mlir::Operation *opInModule) {
-      if (!(mlir::isa<func::FuncOp>(opInModule) 
-                || mlir::isa<mlir::ModuleOp>(opInModule) ||  mlir::isa<mlir::scf::ForOp>(opInModule))){
-        allOpsInModule.push_back(opInModule);
-        opsSet.insert(opInModule);
+    //Some special ops do not participate in the process
+    op->walk([&](mlir::Operation *op) {
+      if (!(mlir::isa<func::FuncOp>(op) || mlir::isa<mlir::ModuleOp>(op) || mlir::isa<scf::YieldOp>(op)
+            || mlir::isa<triton::FuncOp>(op) || mlir::isa<scf::ForOp>(op))){
+        opsVector.push_back(op);
+        opsSet.insert(op);
       }
     });
 
-    generateDenGraph(allOpsInModule, predecessorOps, successorOps);
+    // Find the parent and child operations of each op
+    createGraph(opsVector, preOpsGraph, sucOpsGraph);
 
-    op->walk([&](Operation *curr) {
-      for (auto operand : curr->getOperands()) {
-        auto type = operand.getType();
-
-        if (!type.isa<mlir::RankedTensorType>()){
-          return;
+    if(0){
+      for(auto op : opsVector){
+        llvm::outs()<<"\n\n[tritonGPUIR] op: \n"<<*op<<"\n";
+        llvm::outs()<<"[tirtonGPUIR] preOps: \n";
+        for(auto preOp : preOpsGraph[op]){
+          llvm::outs()<<"[tritonGPUIR] preOp: \n"<<*preOp<<"\n";
         }
 
-        auto tensorType = type.cast<RankedTensorType>();
-        auto layout = tensorType.getEncoding();
-        if (auto DotOp = dyn_cast<triton::DotOp>(curr)){
-          //start from dotOp
-          if (auto dotOpLayout = layout.dyn_cast<DotOperandEncodingAttr>()){
-            opsSet.erase(curr);
-            auto dotEncoding = dotOpLayout;
-          
-            auto genericLayout = dotOpLayout.getParent().cast<GenericEncodingAttr>();
-            unsigned isLayoutUpdated = genericLayout.getIsLayoutUpdated();
-
-            if (isLayoutUpdated == 2) {
-              encoding = genericLayout;
-              propagationLayout(context, curr, encoding, predecessorOps, opsSet);
-            }
-          } else if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
-
-          }
-        }
-        else 
-        if (auto StoreOp = dyn_cast<triton::StoreOp>(curr)){
-          opsSet.erase(curr);
-          auto generic = layout.dyn_cast<GenericEncodingAttr>();
-          unsigned isLayoutUpdated = generic.getIsLayoutUpdated();
-
-          if (isLayoutUpdated == 2) {
-            encoding = generic;
-            propagationLayout(context, curr, encoding, predecessorOps, opsSet);
-
-          }
-        }
-      }
-    });
-
-    bool changed = 1;
-    while(changed){
-      changed = 0;
-      for (auto curr = opsSet.cbegin(); curr != opsSet.cend(); curr++)
-      {
-        if(auto ConstantOp = dyn_cast<arith::ConstantOp>(*curr)){
-          auto curType = ConstantOp.getValue().getType();
-
-          if (curType.isa<mlir::RankedTensorType>()){
-            auto value = ConstantOp.getValue().dyn_cast<DenseElementsAttr>();
-            auto curTensorType = curType.cast<RankedTensorType>();
-            auto currlayout =  curTensorType.getEncoding();
-            if(currlayout.dyn_cast<GenericEncodingAttr>().getIsLayoutUpdated() != 2){
-              if(updateLayout(*curr, value, predecessorOps) || updateLayout(*curr, value, successorOps)){
-                changed = 1;
-              }
-            }
-          }
-        }
-        for (auto operand : (*curr)->getOperands()) {
-          auto type = operand.getType();
-
-          if (type.isa<mlir::RankedTensorType>()){
-            auto tensorType = type.cast<RankedTensorType>();
-            auto layout = tensorType.getEncoding();
-            if(auto generic = layout.dyn_cast<GenericEncodingAttr>()){
-              if(generic.getIsLayoutUpdated() != 2){
-                if(updateLayout(*curr, &operand, predecessorOps) || updateLayout(*curr, &operand, successorOps)){
-                  changed = 1;
-                }
-              }
-            }
-          }
+        llvm::outs()<<"[tirtonGPUIR] sucOps: \n";
+        for(auto sucOp : sucOpsGraph[op]){
+          llvm::outs()<<"[tritonGPUIR] sucOp: \n"<<*sucOp<<"\n";
         }
       }
     }
+
+    // propagate Layout, start from DotOp
+    op->walk([&](Operation *curr) {
+      if (auto dotOp = dyn_cast<triton::DotOp>(curr)){
+        opsSet.erase(dotOp);
+        auto matA = dotOp.getA();
+        auto matB = dotOp.getB();
+        auto matC = dotOp.getC();
+
+        auto aEncoding = matA.getType().dyn_cast<RankedTensorType>().getEncoding();
+        auto bEncoding = matB.getType().dyn_cast<RankedTensorType>().getEncoding();
+        auto cEncoding = matC.getType().dyn_cast<RankedTensorType>().getEncoding();
+
+        aEncoding = aEncoding.dyn_cast<DotOperandEncodingAttr>()
+                                      .getParent().cast<GenericEncodingAttr>();
+        bEncoding = bEncoding.dyn_cast<DotOperandEncodingAttr>()
+                                      .getParent().cast<GenericEncodingAttr>();
+
+        llvm::outs() << "\n\naEncoding: " << aEncoding << "\n";
+        llvm::outs() << "\n\nbEncoding: " << bEncoding << "\n";
+        opsQueueTy aRelatedOpsQueue, bRelatedOpsQueue, cRelatedOpsQueue;
+
+        for(auto preOp : preOpsGraph[dotOp]){
+          if(preOp->getResult(0) == matA){
+            aRelatedOpsQueue.push(preOp);
+          } else if(preOp->getResult(0) == matB){
+            bRelatedOpsQueue.push(preOp);
+          } else{
+            cRelatedOpsQueue.push(preOp);
+          }
+        }
+
+        for(auto sucOp : sucOpsGraph[dotOp]){
+          cRelatedOpsQueue.push(sucOp);
+        }
+
+        propagateLayout(context, aRelatedOpsQueue, aEncoding, preOpsGraph, sucOpsGraph, opsSet);
+        propagateLayout(context, bRelatedOpsQueue, bEncoding, preOpsGraph, sucOpsGraph, opsSet);
+        propagateLayout(context, cRelatedOpsQueue, cEncoding, preOpsGraph, sucOpsGraph, opsSet);
+      }
+    });
+
+    // process forOp
+    op->walk([&](Operation *curr) {
+      if (auto forOp = dyn_cast<scf::ForOp>(curr)){
+        for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
+            auto operand = forOp.getOperands()[i + 3];
+            auto result = forOp.getODSResults(0)[i];
+            auto type = operand.getType();
+            result.setType(type);
+        }
+      }
+    });
+
+    llvm::outs()<<"\n\n[After propagateLayout]tritonGPU IR: "<<"\n";
+    op->print(llvm::outs());
+
+    return;
   }
 };
 
