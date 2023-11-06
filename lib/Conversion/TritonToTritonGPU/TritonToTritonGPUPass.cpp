@@ -295,9 +295,8 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     Attribute aEncoding = aType.getEncoding();
     Attribute bEncoding = bType.getEncoding();
 
-    auto aGenericLayout = aEncoding.dyn_cast<GenericEncodingAttr>();
-    auto newLayout = aGenericLayout.updatemmaFlag(2);
-    Attribute dEncoding = aEncoding;
+    auto newLayout = aEncoding.dyn_cast<GenericEncodingAttr>();
+
     RankedTensorType cNewType =
         RankedTensorType::get(origShape, origType.getElementType(), newLayout);
     RankedTensorType retType = cNewType;

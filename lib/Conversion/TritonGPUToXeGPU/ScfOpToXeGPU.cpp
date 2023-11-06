@@ -52,9 +52,6 @@ public:
 
     TritonGPUToXeGPUTypeConverter xeGPUTypeConverter(*context);
     auto argumentTys = op.getRegion().getArgumentTypes();
-    for(auto arg : argumentTys){
-      llvm::outs()<<"\n\nargumentTys arg: "<<arg<<"\n";
-    }
     mlir::OneToNTypeMapping argumentMapping(argumentTys);
     if (mlir::failed(xeGPUTypeConverter.computeTypeMapping(argumentTys, argumentMapping))) {
       op.emitOpError("Failed to compute the type mapping for arguments.\n");
@@ -67,7 +64,7 @@ public:
     }
 
     auto newOp = rewriter.create<mlir::scf::ForOp>(loc, op.getLowerBound(), 
-                                      op.getUpperBound(), op.getStep(), convertedArgs); 
+                                      op.getUpperBound(), op.getStep(), convertedArgs);
 
     newOp.getBody()->erase();
     rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(), newOp.getRegion().end());
@@ -95,8 +92,6 @@ public:
         recastValues.push_back(recastValue.front());
 
         convertedValueIt += numConvertedValues;
-        // llvm::outs()<<"\n\nrecastValue.front(): "<<recastValue.front()<<"\n";
-        // llvm::outs()<<"\n\nnumConvertedValue: "<<numConvertedValues<<"\n";
       }
     }
     rewriter.replaceOp(op, recastValues);
@@ -114,7 +109,6 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     llvm::SmallVector<mlir::Value> convertedResults;
     for (Value values: adaptor.getResults()){
-      // llvm::outs()<<"\n\nyield values: "<<values<<"\n";
       if(auto *parentOp = values.getDefiningOp()){
         if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
           ValueRange tmp = (&castOp)->getInputs();
@@ -128,9 +122,6 @@ public:
     }
 
     auto newOp = rewriter.create<mlir::scf::YieldOp>(op.getLoc(), convertedResults).getResults();
-
-    llvm::outs()<<"\n\nyield newOp.size(): "<<newOp.size()<<"\n";
-
     rewriter.replaceOp(op, newOp);
     return mlir::success();
   }

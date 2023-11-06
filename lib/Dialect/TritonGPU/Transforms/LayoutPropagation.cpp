@@ -233,8 +233,8 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
 
     const std::vector<unsigned int> bThreadShapeVec{1, 16, 8, 4};
     const std::vector<unsigned int> bThreadStrideVec{0, 1, 0, 64};
-    const std::vector<unsigned int> bElemPerThreadVec{8, 1, 4, 4};
-    const std::vector<unsigned int> bElemStrideVec{1, 0, 8, 16};
+    const std::vector<unsigned int> bElemPerThreadVec{16, 1, 2, 4};
+    const std::vector<unsigned int> bElemStrideVec{1, 0, 16, 16};
     const std::vector<unsigned int> bSubGroupShapeVec{4, 4};
     const std::vector<unsigned int> bOrderVec{1, 0, 1, 0};
     ArrayRef<unsigned int> bThreadShape(bThreadShapeVec);
@@ -256,8 +256,8 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
 
     const std::vector<unsigned int> cThreadShapeVec{1, 16, 8, 4};
     const std::vector<unsigned int> cThreadStrideVec{0, 1, 32, 64};
-    const std::vector<unsigned int> cElemPerThreadVec{16, 1, 2, 4};
-    const std::vector<unsigned int> cElemStrideVec{1, 0, 16, 16};
+    const std::vector<unsigned int> cElemPerThreadVec{8, 1, 4, 4};
+    const std::vector<unsigned int> cElemStrideVec{1, 0, 8, 16};
     const std::vector<unsigned int> cSubGroupShapeVec{4, 4};
     const std::vector<unsigned int> cOrderVec{1, 0, 1, 0};
     ArrayRef<unsigned int> cThreadShape(cThreadShapeVec);

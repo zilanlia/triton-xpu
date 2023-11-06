@@ -38,18 +38,18 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
     // return RankedTensorType::get(shape, tensorType.getElementType(), encoding);
 
     //unsigned int elems = 32 / this->threadsPerWarp;
-    const std::vector<unsigned int> threadShapeVec{1, 16, 8, 4};
-    const std::vector<unsigned int> threadStrideVec{0, 1, 32, 64};
-    const std::vector<unsigned int> elemPerThreadVec{8, 1, 4, 4};
-    const std::vector<unsigned int> elemStrideVec{1, 0, 8, 16};
-    const std::vector<unsigned int> subGroupShapeVec{4, 4, 0, 0};
-    const std::vector<unsigned int> orderVec{1, 0, 1, 0};
-    // const std::vector<unsigned int> threadShapeVec{32, 32};
-    // const std::vector<unsigned int> threadStrideVec{1, 32};
-    // const std::vector<unsigned int> elemPerThreadVec{1, 0};
-    // const std::vector<unsigned int> elemStrideVec{0, 0};
-    // const std::vector<unsigned int> subGroupShapeVec{1, 1};
-    // const std::vector<unsigned int> orderVec{1, 0};
+    // const std::vector<unsigned int> threadShapeVec{1, 16, 8, 4};
+    // const std::vector<unsigned int> threadStrideVec{0, 1, 32, 64};
+    // const std::vector<unsigned int> elemPerThreadVec{8, 1, 4, 4};
+    // const std::vector<unsigned int> elemStrideVec{1, 0, 8, 16};
+    // const std::vector<unsigned int> subGroupShapeVec{4, 4, 0, 0};
+    // const std::vector<unsigned int> orderVec{1, 0, 1, 0};
+    const std::vector<unsigned int> threadShapeVec{32, 32};
+    const std::vector<unsigned int> threadStrideVec{1, 32};
+    const std::vector<unsigned int> elemPerThreadVec{1, 0};
+    const std::vector<unsigned int> elemStrideVec{0, 0};
+    const std::vector<unsigned int> subGroupShapeVec{1, 1};
+    const std::vector<unsigned int> orderVec{1, 0};
 
     ArrayRef<unsigned int> threadShape(threadShapeVec);
     ArrayRef<unsigned int> threadstride(threadStrideVec);

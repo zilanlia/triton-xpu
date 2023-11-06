@@ -461,7 +461,7 @@ def GenericEncodingAttr : DistributedEncoding<"GenericEncoding"> {
 
   #triton_gpu.generic_layout<{
     threadShape
-    threadstrideArrayRefParameter
+    threadstride
     elemPerThread
     elemStride
     subGroupShape

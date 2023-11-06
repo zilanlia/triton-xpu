@@ -91,6 +91,7 @@ Note that this feature is still experimental and may change in the future.
 # ------------
 
 import torch
+import time
 
 import triton
 import triton.language as tl
@@ -177,7 +178,7 @@ def matmul_kernel_with_block_pointers(
         # See above `Advance a Block Pointer` section for details.
         a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_SIZE_K))
         b_block_ptr = tl.advance(b_block_ptr, (BLOCK_SIZE_K, 0))
-    c = accumulator.to(tl.float32)
+    c = accumulator.to(tl.float16)
 
     # ----------------------------------------------------------------
     # Write back the block of the output matrix C with boundary checks.
@@ -198,7 +199,7 @@ def matmul(a, b):
     M, K = a.shape
     K, N = b.shape
     # Allocates output.
-    c = torch.empty((M, N), device=a.device, dtype=torch.float32)
+    c = torch.empty((M, N), device=a.device, dtype=torch.float16)
     # 1D launch kernel where each block gets its own program.
     grid = lambda META: (
         triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
@@ -229,7 +230,7 @@ b = torch.randn((4096, 4096), device='xpu', dtype=torch.float16)
 triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
 
-triton_output = triton_output.half()
+# triton_output = triton_output.half()
 
 print(f"triton_output={triton_output}")
 print(f"torch_output={torch_output}")
@@ -249,3 +250,58 @@ if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")
+
+M = 4096
+N = 4096
+K = 4096 
+
+perf_test = 1
+
+if perf_test:
+    a = torch.randn((M, K), device='xpu', dtype=torch.float16)
+    b = torch.randn((K, N), device='xpu', dtype=torch.float16)
+    single_run_start = time.time()
+    triton_output = matmul(a, b)
+    single_run_end = time.time()
+    print("[perfermance] warp up take time: ", (single_run_end - single_run_start) * 1000, " ms")
+
+    ops = 2 * M * N * K
+    iter = 100
+    print("[perfermance] test %d itertions", iter)
+
+    test_torch_mutmal = 0
+    if test_torch_mutmal:
+        print("[perfermance] torch.matmul")
+        start = time.time()
+        total_time = 0
+        for i in range(0, iter):
+            a = torch.randn((M, K), device='xpu', dtype=torch.float16)
+            b = torch.randn((K, N), device='xpu', dtype=torch.float16)
+            single_run_start = time.time()
+            triton_output = torch.matmul(a, b)
+            # print(f"triton_output={triton_output[0]}")
+            single_run_end = time.time()
+            total_time += (single_run_end - single_run_start) * 1000
+            run_time = (single_run_end - single_run_start) * 1000
+            print("[perfermance] itertion: ", i)
+            print("[perfermance][cpu] time: ", run_time, " ms", " gflops: ", ops / run_time / 1000 / 1000)
+
+        end = time.time()
+        print("[perfermance] torch.matmul 100 itertion take time: ", total_time, " ms", " average time: ", total_time / iter, " gflops: ",  ops / (total_time / iter) / 1000 / 1000)
+
+
+    print("[perfermance] triton matmul ")
+    start = time.time()
+    total_time = 0
+    for i in range(0, iter):
+        a = torch.randn((M, K), device='xpu', dtype=torch.float16)
+        b = torch.randn((K, N), device='xpu', dtype=torch.float16)
+        single_run_start = time.time()
+        triton_output = matmul(a, b)
+        single_run_end = time.time()
+        total_time += (single_run_end - single_run_start) * 1000
+        run_time = (single_run_end - single_run_start) * 1000
+
+    end = time.time()
+    print("[perfermance][cpu] 100 itertion  time: ", total_time, " ms", " average time: ", total_time / iter, " gflops: ",  ops / (total_time / iter) / 1000 / 1000)
+    print("\n")

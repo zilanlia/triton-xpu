@@ -557,8 +557,8 @@ def compile(fn, **kwargs):
         if not is_cuda and not is_hip():
             _device_backend.add_meta_info(ir_name, module, next_module, metadata, asm)
         module = next_module
-        print(ir_name)
-        print(module)
+        # print(ir_name)
+        # print(module)
 
     ids_of_folded_args = tuple([int(k) for k in configs[0].ids_of_folded_args]) if isinstance(fn, JITFunction) else ()
     if "clusterDims" not in metadata:

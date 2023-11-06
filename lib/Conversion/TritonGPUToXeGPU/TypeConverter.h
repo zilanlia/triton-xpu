@@ -7,12 +7,6 @@
 using namespace mlir;
 using namespace mlir::triton;
 
-Value packLLElements(Location loc, ValueRange resultVals,
-                      ConversionPatternRewriter &rewriter, Type type);
-
-SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
-                                    ConversionPatternRewriter &rewriter);
-
 class TritonGPUToXeGPUTypeConverter : public mlir::OneToNTypeConverter {
 public:
   using OneToNTypeConverter::convertType;
@@ -31,28 +25,3 @@ private:
 };
 
 #endif
-
-
-
-// Value packLLElements(Location loc, ValueRange resultVals,
-//                       ConversionPatternRewriter &rewriter, Type type);
-
-// SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
-//                                     ConversionPatternRewriter &rewriter);
-
-// class TritonGPUToXeGPUTypeConverter : public mlir::TypeConverter {
-// public:
-//   using TypeConverter::convertType;
-
-//   TritonGPUToXeGPUTypeConverter(mlir::MLIRContext &context);
-
-//   Type convertTritonPointerType(triton::PointerType type);
-
-//   llvm::Optional<Type> convertTritonTensorType(RankedTensorType type);
-
-
-// private:
-//   mlir::MLIRContext &context;
-// };
-
-// #endif
