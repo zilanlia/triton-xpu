@@ -82,6 +82,7 @@ TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
 std::optional<mlir::LogicalResult>
 TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
         triton::PointerType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes)  {
+  llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] convertTritonPointerType\n";
   auto pointeeType = type.getPointeeType();
   if(isa<RankedTensorType>(pointeeType)){
     auto tensorType = pointeeType.cast<RankedTensorType>();
@@ -118,17 +119,22 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
                     elemTy, MemoryScopeAttr::get(type.getContext(), MemoryScope::GLOBAL));
         int blockShapeK = elemShape[2] * elemStride[2];
         numElements = (blockShapeK / loadK) * elemShape[3];
-      } else{
-
+      } else if(mmaFlag == 3){
+        //todo
+        tdescTy = TensorDescType::get({shape[0], shape[1]}, 
+                    elemTy, MemoryScopeAttr::get(type.getContext(), MemoryScope::GLOBAL));
+        numElements = 1;
       } 
 
       resultTypes.assign(numElements, tdescTy);
+      //llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] resultTypes[0]: "<< resultTypes[0] <<"\n";
     }
   } else {
     auto newType = MemRefType::get({ShapedType::kDynamic}, type.getPointeeType());
     resultTypes.assign(1, newType);
   }
 
+  //llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] convertTritonPointerType Finished\n";
   return success();
 }
 

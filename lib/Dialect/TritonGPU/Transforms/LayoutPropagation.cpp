@@ -25,7 +25,6 @@
 
 using namespace mlir;
 using namespace mlir::scf;
-using ::mlir::triton::gpu::SliceEncodingAttr;
 using ::mlir::triton::gpu::GenericEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 

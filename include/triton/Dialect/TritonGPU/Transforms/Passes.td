@@ -161,4 +161,17 @@ def TritonGPULayoutPropagation : Pass<"tritongpu-layout-propagation", "mlir::Mod
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonGPUPrefetchToCache : Pass<"tritongpu-prefetch-to-cache", "mlir::ModuleOp"> {
+  let summary = "prefetch to cache ";
+
+  let description = [{
+    Add prefetch for dotOp
+  }];
+
+  let constructor = "mlir::createTritonGPUPrefetchToCachePass()";
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 #endif

@@ -33,6 +33,7 @@ public:
   LogicalResult
   matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    llvm::outs()<<"\n\n[ForOpToXeGPUPattern] Start\n";
     auto loc = op.getLoc();
     auto context = op.getContext();
 
@@ -70,7 +71,8 @@ public:
     rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(), newOp.getRegion().end());
 
     SmallVector<Value> newResult;
-    ValueRange newValues = newOp.getResults();
+    auto results = newOp.getResults();
+    ValueRange newValues{results};
     auto resultTys = op->getResultTypes();
     mlir::OneToNTypeMapping resultMapping(resultTys);
     llvm::SmallVector<mlir::Value> recastValues;
@@ -86,8 +88,9 @@ public:
 
         // Non-identity conversion: cast back to source type.
         mlir::ValueRange tmp{convertedValueIt, convertedValueIt + numConvertedValues};
-        mlir::ValueRange recastValue = rewriter.create<mlir::UnrealizedConversionCastOp>(loc,
+        auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(loc,
             originalType, tmp).getResults();
+        mlir::ValueRange recastValue{cast};
         assert(recastValue.size() == 1);
         recastValues.push_back(recastValue.front());
 
@@ -107,12 +110,19 @@ public:
   LogicalResult
   matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    //llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] Start\n";
     llvm::SmallVector<mlir::Value> convertedResults;
     for (Value values: adaptor.getResults()){
       if(auto *parentOp = values.getDefiningOp()){
         if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
-          ValueRange tmp = (&castOp)->getInputs();
-          convertedResults.append(tmp.begin(), tmp.end());
+          auto src = (&castOp)->getInputs();
+          ValueRange range{src};
+          SmallVector<Value> vec;
+          for(int i = 0; i < range.size(); i++){
+            vec.push_back(range[i]);
+          }
+
+          convertedResults.append(vec.begin(), vec.end());
         }else{
           convertedResults.push_back(values);
         }
@@ -120,8 +130,12 @@ public:
         convertedResults.push_back(values);
       }
     }
+    // for(auto result : convertedResults){
+    //   llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] result:"<<result<<"\n";
+    // }
 
     auto newOp = rewriter.create<mlir::scf::YieldOp>(op.getLoc(), convertedResults).getResults();
+    llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] newYieldOP:"<<newOp[0]<<"\n";
     rewriter.replaceOp(op, newOp);
     return mlir::success();
   }

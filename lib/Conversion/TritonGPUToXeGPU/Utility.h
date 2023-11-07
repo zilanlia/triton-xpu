@@ -86,14 +86,6 @@
 #define joint_matrix_mad(...)                                                  \
   rewriter.create<spirv::INTELJointMatrixMadOp>(loc, __VA_ARGS__)
 
-#define udivb(...) builder.create<spirv::UDivOp>(loc, __VA_ARGS__)
-#define uremb(...) builder.create<spirv::UModOp>(loc, __VA_ARGS__)
-#define addb(...) builder.create<spirv::IAddOp>(loc, __VA_ARGS__)
-#define mulb(...) builder.create<spirv::IMulOp>(loc, __VA_ARGS__)
-#define ptrtointb(...) builder.create<spirv::ConvertPtrToUOp>(loc, __VA_ARGS__)
-
-#define i32_valb(v)  builder.create<arith::ConstantOp>(loc, i32ty, IntegerAttr::get(i32ty, v))
-
 #define stage 3
 
 // Types
