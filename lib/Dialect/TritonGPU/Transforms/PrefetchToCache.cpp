@@ -217,7 +217,8 @@ Value Prefetcher::generatePrefetch(Value ptr, OpBuilder &builder) {
     newBlockShape[0] = sgBlockDim0 / prefetchInDim0;
     newBlockShape[1] = blockDim1;
 
-    tensorOffsets[1] = add(tensorOffsets[1], i32_val(blockShape[1]));
+    tensorOffsets[0] = add(tensorOffsets[0], mul(sgIdM, i32_val(sgBlockDim0)));
+    tensorOffsets[1] = add(tensorOffsets[1], i32_val(blockShape[1] * 2));
     Value sgOffsetM = mul(udiv(sgIdN, i32_val(prefetchInDim1)), i32_val(newBlockShape[0]));
     Value sgOffsetN = mul(urem(sgIdN, i32_val(prefetchInDim1)), i32_val(newBlockShape[1]));
     tensorOffsets[0] = add(tensorOffsets[0], sgOffsetM);
@@ -232,7 +233,8 @@ Value Prefetcher::generatePrefetch(Value ptr, OpBuilder &builder) {
     newBlockShape[0] = sgBlockDim0 / prefetchInDim0;
     newBlockShape[1] = blockDim1;
 
-    tensorOffsets[0] = add(tensorOffsets[0], i32_val(blockShape[0]));
+    tensorOffsets[0] = add(tensorOffsets[0], i32_val(blockShape[0] * 2));
+    tensorOffsets[1] = add(tensorOffsets[1], mul(sgIdN, i32_val(sgBlockDim1)));
     Value sgOffsetM = mul(udiv(sgIdM, i32_val(prefetchInDim1)), i32_val(newBlockShape[0]));
     Value sgOffsetN = mul(urem(sgIdM, i32_val(prefetchInDim1)), i32_val(newBlockShape[1]));
     tensorOffsets[0] = add(tensorOffsets[0], sgOffsetM);
@@ -290,33 +292,46 @@ scf::ForOp Prefetcher::createNewForOp() {
     Operation *newOp;
     // Operation *prevDot;
     auto dotOp = dyn_cast<triton::DotOp>(&op);
+    auto loadOp = dyn_cast<triton::LoadOp>(&op);
 
-    if (dotOp && dots.contains(dotOp)) {
-      Operation *newDotOp = builder.clone(*dotOp, mapping);
+    int dotIdx = -1;
+    if(loadOp){
+      for(int i = 0;i < dots.size();i++){
+        if(dot2bLoad[dots[i]] == loadOp){
+          dotIdx = i;
+          break;
+        }
+      }
+    }
+
+    if(dotIdx >= 0){
+      DotOp dotOp = dots[dotIdx].getDefiningOp<DotOp>();
+      Operation *newLoadOp = builder.clone(*loadOp, mapping);
+      llvm::outs()<<"\n\n[Prefetch to cache] newLoadOp: "<<*newLoadOp<<"\n";
       auto insertionPoint = builder.saveInsertionPoint();
-      builder.setInsertionPoint(newDotOp);
-      Location loc = newDotOp->getLoc();
+      builder.setInsertionPointAfter(newLoadOp);
+      Location loc = newLoadOp->getLoc();
 
       //llvm::outs()<<"\n\n[Prefetch to cache] prefetch A\n";
-      LoadOp loadAOp = dot2aLoad[dotOp];
+      LoadOp loadOp = dot2aLoad[dotOp];
       Value aPrefetchPtr = operand2headPrefetch.lookup(dotOp.getA());
       aPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*aPrefetchPtr.use_begin());
       auto prefetchA = builder.create<triton::LoadOp>(loc, aPrefetchPtr, 
-              loadAOp.getCache(), loadAOp.getEvict(), loadAOp.getIsVolatile());
+              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
 
       //llvm::outs()<<"\n\n[Prefetch to cache] prefetch B\n";
       LoadOp loadBOp = dot2bLoad[dotOp];
       Value bPrefetchPtr = operand2headPrefetch.lookup(dotOp.getB());
       bPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*bPrefetchPtr.use_begin());
       auto prefetchB = builder.create<triton::LoadOp>(loc, bPrefetchPtr, 
-              loadBOp.getCache(),loadBOp.getEvict(), loadBOp.getIsVolatile());
-      builder.restoreInsertionPoint(insertionPoint);
+              loadOp.getCache(),loadOp.getEvict(), loadOp.getIsVolatile());
+      // builder.restoreInsertionPoint(insertionPoint);
 
-      newOp = newDotOp;
+      newOp = newLoadOp;
 
       //llvm::outs()<<"\n\n[Prefetch to cache] advance A ptr\n";
-      insertionPoint = builder.saveInsertionPoint();
-      builder.setInsertionPointAfter(newOp);
+      // insertionPoint = builder.saveInsertionPoint();
+      // builder.setInsertionPointAfter(newOp);
       auto retType = aPrefetchPtr.getType();
       auto dot = dotOp.getODSResults(0)[0];
       auto advanceOp = dot2aYield[dot].getDefiningOp<triton::AdvanceOp>();

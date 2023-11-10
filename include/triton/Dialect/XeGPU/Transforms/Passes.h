@@ -42,13 +42,15 @@ void populateXeGPUToSPIRVWithVCIntrinsicsPatterns(
 void populateXeGPUToSPIRVWithJointMatrixPatterns(
     ::mlir::LLVMTypeConverter &converter, ::mlir::RewritePatternSet &patterns);
 
+std::unique_ptr<Pass> createXeGPUOptimizeDotOpPass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//
 
 /// Generate the code for registering passes.
-// #define GEN_PASS_REGISTRATION
-// #include <triton/Dialect/XeGPU/Transforms/Passes.h.inc>
+#define GEN_PASS_REGISTRATION
+#include <triton/Dialect/XeGPU/Transforms/Passes.h.inc>
 
 } // namespace mlir
 

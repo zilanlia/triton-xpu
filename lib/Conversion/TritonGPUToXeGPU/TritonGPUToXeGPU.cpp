@@ -175,8 +175,8 @@ public:
     auto result = xeGPUTypeConverter.convertType(op.getType(), resultTypes);
     auto retType = resultTypes[0];
 
-    llvm::outs() << "\n\nArithTruncFPattern retType: " << retType << "\n";
-    llvm::outs() << "\n\nArithConstant retType: " << resultTypes.size() << "\n";
+    // llvm::outs() << "\n\nArithTruncFPattern retType: " << retType << "\n";
+    // llvm::outs() << "\n\nArithConstant retType: " << resultTypes.size() << "\n";
 
     auto src = adaptor.getIn();
     ValueRange in{src};
@@ -200,8 +200,8 @@ public:
         auto resultTys = op->getResultTypes();
         auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newValueRange)->getResults();
         newValueRange = ValueRange(cast);
-        llvm::outs()<<"\n\nresultTys: "<<resultTys<<"\n";
-        llvm::outs()<<"\n\nnewValueRange: "<<newValueRange[0]<<"\n";
+        // llvm::outs()<<"\n\nresultTys: "<<resultTys<<"\n";
+        // llvm::outs()<<"\n\nnewValueRange: "<<newValueRange[0]<<"\n";
         rewriter.replaceOp(op, newValueRange);
 
       } else {
@@ -242,7 +242,7 @@ public:
     ValueRange desc{adaptor.getPtr()};
     int nElem = desc.size();
     auto descType = desc[0].getType();
-    llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc[0]: "<<desc[0]<<"\n";
+    //llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc[0]: "<<desc[0]<<"\n";
 
     RankedTensorType tensorType = op.getResult().getType().cast<RankedTensorType>();
     auto encoding = tensorType.getEncoding();
@@ -279,8 +279,8 @@ public:
     } else{
     }
 
-    llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]elemType: "<<elemType<<"\n";
-    llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]nElem: "<<nElem<<"\n";
+    // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]elemType: "<<elemType<<"\n";
+    // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]nElem: "<<nElem<<"\n";
     auto L1_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
     auto L2_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
     auto L3_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
@@ -320,10 +320,10 @@ public:
         }
 
         Value ret = rewriter.create<xegpu::LoadGatherOp>(loc, elemType, desc0, mask, IntegerAttr{}, DenseI64ArrayAttr{}, L1_hint, L2_hint, L3_hint);
-        llvm::outs()<<"\n\nxegpu::LoadGatherOp: " << ret <<"\n";
+        // llvm::outs()<<"\n\nxegpu::LoadGatherOp: " << ret <<"\n";
         rewriter.replaceOp(op, ret);
       } else if(mmaFlag == 3){
-        llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc0: "<<desc0<<"\n";
+        // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc0: "<<desc0<<"\n";
         // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc[0]: "<<desc[0]<<"\n";
         rewriter.create<xegpu::PrefetchNDOp>(loc, desc0, L1_hint, L2_hint, L3_hint);
         rewriter.eraseOp(op);
@@ -766,7 +766,7 @@ public:
 
         tensorDescType = TensorDescType::get(context, ::llvm::ArrayRef<int64_t>{blockM, blockK}, elemType, 
                                                       MemoryScopeAttr::get(context, MemoryScope::GLOBAL));
-        llvm::outs()<<"\n\n[MakeTensorPtrOp] LoadA tensorDescType: "<<tensorDescType<<"\n";
+        //llvm::outs()<<"\n\n[MakeTensorPtrOp] LoadA tensorDescType: "<<tensorDescType<<"\n";
         int numRepM = 32 / blockM;
         int numRepK = 32 / blockK;
 
@@ -795,7 +795,7 @@ public:
         const int blockN = 16;
         tensorDescType = TensorDescType::get(context, ::llvm::ArrayRef<int64_t>{blockK, blockN}, elemType, 
                                                       MemoryScopeAttr::get(context, MemoryScope::GLOBAL));
-        llvm::outs()<<"\n\n[MakeTensorPtrOp] LoadB tensorDescType: "<<tensorDescType<<"\n";
+        //llvm::outs()<<"\n\n[MakeTensorPtrOp] LoadB tensorDescType: "<<tensorDescType<<"\n";
         Value offsetK = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(blockK));
         Value offsetN = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(blockN));
 
@@ -827,7 +827,7 @@ public:
         //todo
         tensorDescType = TensorDescType::get(context, ::llvm::ArrayRef<int64_t>{blockShape[0], blockShape[1]}, elemType, 
                                                       MemoryScopeAttr::get(context, MemoryScope::GLOBAL));
-        llvm::outs()<<"\n\n[MakeTensorPtrOp] Prefetch tensorDescType: "<<tensorDescType<<"\n";
+        //llvm::outs()<<"\n\n[MakeTensorPtrOp] Prefetch tensorDescType: "<<tensorDescType<<"\n";
         descOp = rewriter.create<xegpu::CreateNdDescOp>(loc, tensorDescType, addr,
                     curNdOffset, NdShape, NdStride, 
                     triton::xegpu::MemoryScope::GLOBAL, true);
@@ -989,8 +989,8 @@ public:
     Type resultStructTy = spirv::StructType::get(SmallVector<Type>(4*4, resultTy));
 
     //todo
-    for (int m = 0; m < 4; m++) {
-      for (int n = 0; n < 4; n++) {
+    for (int n = 0; n < 4; n++) {
+      for (int m = 0; m < 4; m++) {
         auto matC = matCRange[m*4+n];
         for (int k = 0; k < 2; k++) {
           auto matA = matARange[m*2+k];

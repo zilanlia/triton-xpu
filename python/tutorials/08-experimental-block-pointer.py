@@ -172,12 +172,13 @@ def matmul_kernel_with_block_pointers(
         # See above `Load/Store a Block Pointer` section for details.
         a = tl.load(a_block_ptr, boundary_check=(0, 1))
         b = tl.load(b_block_ptr, boundary_check=(0, 1))
-        # We accumulate along the K dimension.
-        accumulator += tl.dot(a, b)
         # Advance the block pointer to the next K block.
         # See above `Advance a Block Pointer` section for details.
         a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_SIZE_K))
         b_block_ptr = tl.advance(b_block_ptr, (BLOCK_SIZE_K, 0))
+        # We accumulate along the K dimension.
+        accumulator += tl.dot(a, b)
+
     c = accumulator.to(tl.float16)
 
     # ----------------------------------------------------------------

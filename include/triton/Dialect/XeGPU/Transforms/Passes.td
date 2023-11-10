@@ -12,8 +12,8 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef _XEGPU_PASSES_TD_INCLUDED_
-#define _XEGPU_PASSES_TD_INCLUDED_
+#ifndef XEGPU_PASSES
+#define XEGPU_PASSES
 
 include "mlir/Pass/PassBase.td"
 
@@ -54,5 +54,17 @@ include "mlir/Pass/PassBase.td"
 //   let dependentDialects = ["::imex::xegpu::XeGPUDialect"];
 //   let options = [];
 // }
+
+def XeGPUOptimizeDotOp : Pass<"xegpu-optimize-dotOp", "mlir::ModuleOp"> {
+  let summary = "optimize dotOp";
+
+  let description = [{
+    optimize dotOp
+  }];
+
+  let constructor = "mlir::createXeGPUOptimizeDotOpPass()";
+
+  let dependentDialects = ["mlir::triton::xegpu::XeGPUDialect"];
+}
 
 #endif // _XEGPU_PASSES_TD_INCLUDED_
