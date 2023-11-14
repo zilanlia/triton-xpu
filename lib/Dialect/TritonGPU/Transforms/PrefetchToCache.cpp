@@ -45,7 +45,7 @@ class Prefetcher {
   DenseMap<Value, Value> dot2bYield;
   DenseMap<Value, Value> operand2headPrefetch;
 
-  Value generatePrefetch(Value ptr, OpBuilder &builder);
+  Value generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp);
 public:
   Prefetcher() = delete;
 
@@ -161,7 +161,7 @@ LogicalResult Prefetcher::initialize() {
 #define i64_ty mlir::IntegerType::get(context, 64)
 #define i32_val(v)  builder.create<arith::ConstantOp>(loc, i32_ty, IntegerAttr::get(i32_ty, v))
 
-Value Prefetcher::generatePrefetch(Value ptr, OpBuilder &builder) {
+Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp) {
   Location loc = ptr.getLoc();
   auto context = ptr.getContext();
   llvm::outs()<<"\n\n[Prefetch to cahce]ptr: "<<ptr<<"\n";
@@ -205,40 +205,80 @@ Value Prefetcher::generatePrefetch(Value ptr, OpBuilder &builder) {
   SmallVector<Value> tensorStride = makePtrOp.getStrides();
   SmallVector<Value> tensorOffsets = makePtrOp.getOffsets();
 
-  // llvm::outs()<<"\n\n[Prefetch to cahce]tensorOffsets[0]: "<<tensorOffsets[0]<<"\n";
-  // llvm::outs()<<"\n\n[Prefetch to cahce]mmaFlag: "<<mmaFlag<<"\n";
   Value prefetchPtr;
+  int prefetchStage = 3;
+
+  auto newLayout = layout.updatemmaFlag(3);
+
   if(mmaFlag == 0){ //prefetch matrix A
-    //todo currently, by default, the number of subGroups 
-    //in the N direction is greater than the number of blocks.
-    //llvm::outs()<<"\n\n[Prefetch to cahce]blockDim1: "<<blockDim1<<"\n";
-    int prefetchInDim1 = sgBlockDim1 / blockDim1;
-    int prefetchInDim0 = sgSizeN / prefetchInDim1;
-    newBlockShape[0] = sgBlockDim0 / prefetchInDim0;
-    newBlockShape[1] = blockDim1;
+    //to do: need to add some inference for newBlockShape
+    //https://gfxspecs.intel.com/Predator/Home/Index/55490
+    newBlockShape[0] = 8;
+    newBlockShape[1] = 32;
+
+    int prefetchInDim1 = sgBlockDim1 / newBlockShape[1];
+    int prefetchInDim0 = sgBlockDim0 / newBlockShape[0];
 
     tensorOffsets[0] = add(tensorOffsets[0], mul(sgIdM, i32_val(sgBlockDim0)));
-    tensorOffsets[1] = add(tensorOffsets[1], i32_val(blockShape[1] * 2));
+    tensorOffsets[1] = add(tensorOffsets[1], i32_val(0));
     Value sgOffsetM = mul(udiv(sgIdN, i32_val(prefetchInDim1)), i32_val(newBlockShape[0]));
     Value sgOffsetN = mul(urem(sgIdN, i32_val(prefetchInDim1)), i32_val(newBlockShape[1]));
     tensorOffsets[0] = add(tensorOffsets[0], sgOffsetM);
     tensorOffsets[1] = add(tensorOffsets[1], sgOffsetN);
 
+    for(int i = 0; i < prefetchStage; i++){
+      prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
+            loc, base, tensorShape, tensorStride, 
+            tensorOffsets, newBlockShape, order);
+
+      tensorType = prefetchPtr.getType().cast<triton::PointerType>()
+                      .getPointeeType().cast<RankedTensorType>();
+      auto newType = RankedTensorType::get(tensorType.getShape(),
+                    elemType, newLayout);
+      ptrType = PointerType::get(newType, 1);
+      prefetchPtr.setType(ptrType);
+
+      tensorOffsets[1] = add(tensorOffsets[1], i32_val(blockShape[1]));
+
+      auto prefetchA = builder.create<triton::LoadOp>(loc, prefetchPtr, 
+              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+    }
+
     prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
           loc, base, tensorShape, tensorStride, 
           tensorOffsets, newBlockShape, order);
-  }else{ //prefetch matrix B
-    int prefetchInDim1 = sgBlockDim1 / blockDim1;
-    int prefetchInDim0 = sgSizeM / prefetchInDim1;
-    newBlockShape[0] = sgBlockDim0 / prefetchInDim0;
-    newBlockShape[1] = blockDim1;
 
-    tensorOffsets[0] = add(tensorOffsets[0], i32_val(blockShape[0] * 2));
+  }else{ //prefetch matrix B
+    //todo need to add some inference for newBlockShape
+    newBlockShape[0] = 8;
+    newBlockShape[1] = 32;
+    int prefetchInDim1 = sgBlockDim1 / newBlockShape[1];
+    int prefetchInDim0 = sgBlockDim0 / newBlockShape[0];
+
+    tensorOffsets[0] = add(tensorOffsets[0], i32_val(0));
     tensorOffsets[1] = add(tensorOffsets[1], mul(sgIdN, i32_val(sgBlockDim1)));
     Value sgOffsetM = mul(udiv(sgIdM, i32_val(prefetchInDim1)), i32_val(newBlockShape[0]));
     Value sgOffsetN = mul(urem(sgIdM, i32_val(prefetchInDim1)), i32_val(newBlockShape[1]));
     tensorOffsets[0] = add(tensorOffsets[0], sgOffsetM);
     tensorOffsets[1] = add(tensorOffsets[1], sgOffsetN);
+
+    for(int i = 0; i < prefetchStage; i++){
+      prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
+            loc, base, tensorShape, tensorStride, 
+            tensorOffsets, newBlockShape, order);
+
+      tensorType = prefetchPtr.getType().cast<triton::PointerType>()
+                      .getPointeeType().cast<RankedTensorType>();
+      auto newType = RankedTensorType::get(tensorType.getShape(),
+                    elemType, newLayout);
+      ptrType = PointerType::get(newType, 1);
+      prefetchPtr.setType(ptrType);
+
+      tensorOffsets[0] = add(tensorOffsets[0], i32_val(blockShape[0]));
+
+      auto prefetchB = builder.create<triton::LoadOp>(loc, prefetchPtr, 
+              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+    }
 
     prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
           loc, base, tensorShape, tensorStride, 
@@ -247,9 +287,6 @@ Value Prefetcher::generatePrefetch(Value ptr, OpBuilder &builder) {
 
   tensorType = prefetchPtr.getType().cast<triton::PointerType>()
                       .getPointeeType().cast<RankedTensorType>();
-  //llvm::outs()<<"\n\n[Prefetch to cahce] tensorType: "<<tensorType<<"\n";
-  //layout = tensorType.getEncoding().cast<GenericEncodingAttr>();
-  auto newLayout = layout.updatemmaFlag(3);
   auto newType = RankedTensorType::get(tensorType.getShape(),
                 elemType, newLayout);
   ptrType = PointerType::get(newType, 1);
@@ -263,7 +300,6 @@ Value Prefetcher::generatePrefetch(Value ptr, OpBuilder &builder) {
 scf::ForOp Prefetcher::createNewForOp() {
   OpBuilder builder(forOp);
 
-  //llvm::outs()<<"\n\n[Prefetch to cache] set loopArgs\n";
   SmallVector<Value> loopArgs;
   for (auto v : forOp.getIterOperands()){
     loopArgs.push_back(v);
@@ -312,33 +348,26 @@ scf::ForOp Prefetcher::createNewForOp() {
       builder.setInsertionPointAfter(newLoadOp);
       Location loc = newLoadOp->getLoc();
 
-      //llvm::outs()<<"\n\n[Prefetch to cache] prefetch A\n";
       LoadOp loadOp = dot2aLoad[dotOp];
       Value aPrefetchPtr = operand2headPrefetch.lookup(dotOp.getA());
       aPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*aPrefetchPtr.use_begin());
       auto prefetchA = builder.create<triton::LoadOp>(loc, aPrefetchPtr, 
               loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
 
-      //llvm::outs()<<"\n\n[Prefetch to cache] prefetch B\n";
       LoadOp loadBOp = dot2bLoad[dotOp];
       Value bPrefetchPtr = operand2headPrefetch.lookup(dotOp.getB());
       bPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*bPrefetchPtr.use_begin());
       auto prefetchB = builder.create<triton::LoadOp>(loc, bPrefetchPtr, 
               loadOp.getCache(),loadOp.getEvict(), loadOp.getIsVolatile());
-      // builder.restoreInsertionPoint(insertionPoint);
 
       newOp = newLoadOp;
 
-      //llvm::outs()<<"\n\n[Prefetch to cache] advance A ptr\n";
-      // insertionPoint = builder.saveInsertionPoint();
-      // builder.setInsertionPointAfter(newOp);
       auto retType = aPrefetchPtr.getType();
       auto dot = dotOp.getODSResults(0)[0];
       auto advanceOp = dot2aYield[dot].getDefiningOp<triton::AdvanceOp>();
       SmallVector<Value> aOffset = advanceOp.getOffsets();
       aAdvancedPtr = builder.create<triton::AdvanceOp>(loc, retType, aPrefetchPtr, aOffset);
 
-      //llvm::outs()<<"\n\n[Prefetch to cache] advance A ptr\n";
       retType = bPrefetchPtr.getType();
       dot = dotOp.getODSResults(0)[0];
       advanceOp = dot2bYield[dot].getDefiningOp<triton::AdvanceOp>();
@@ -375,15 +404,14 @@ void Prefetcher::emitPrologue() {
     auto dot = dots[i];
     Attribute dotEncoding =
         dot.getType().cast<RankedTensorType>().getEncoding();
-    llvm::outs()<<"\n\n[Prefetch to cache]dotEncoding:"<<dotEncoding<<"\n";
     Attribute dotaEncoding = dotas[i].getType().cast<RankedTensorType>().getEncoding()
                             .dyn_cast<DotOperandEncodingAttr>().getParent();
     Attribute dotbEncoding = dotbs[i].getType().cast<RankedTensorType>().getEncoding()
                             .dyn_cast<DotOperandEncodingAttr>().getParent();
-    Value aPrefetched = generatePrefetch(dot2aPtr[dot], builder);
+    Value aPrefetched = generatePrefetch(builder, dot2aPtr[dot], dot2aLoad[dot]);
     operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getA()] =
         aPrefetched;
-    Value bPrefetched = generatePrefetch(dot2bPtr[dot], builder);
+    Value bPrefetched = generatePrefetch(builder, dot2bPtr[dot], dot2bLoad[dot]);
     operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getB()] =
         bPrefetched;
   }

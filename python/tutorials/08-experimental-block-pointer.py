@@ -134,12 +134,12 @@ def matmul_kernel_with_block_pointers(
     # This is done in a grouped ordering to promote L2 data reuse.
     # See the matrix multiplication tutorial for details.
     pid = tl.program_id(axis=0)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    # num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    pid = pid.to(tl.uint32)
+    num_pid_n = num_pid_n.to(tl.uint32)
     pid_m = pid // num_pid_n
     pid_n = pid % num_pid_n
-    # num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    # num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     # num_pid_in_group = GROUP_SIZE_M * num_pid_n
     # group_id = pid // num_pid_in_group
     # first_pid_m = group_id * GROUP_SIZE_M
@@ -256,7 +256,7 @@ M = 4096
 N = 4096
 K = 4096 
 
-perf_test = 1
+perf_test = 0
 
 if perf_test:
     a = torch.randn((M, K), device='xpu', dtype=torch.float16)
