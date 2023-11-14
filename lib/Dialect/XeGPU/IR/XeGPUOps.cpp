@@ -98,7 +98,7 @@ bool dpasSupportedTypes(mlir::Type type, bool isResult) {
     else
       return false;
   } else {
-    if (type.isF16() || type.isBF16() || type.isInteger(8))
+    if (type.isF16() || type.isBF16() || type.isInteger(8) || type.isInteger(16))
       return true;
     else
       return false;
@@ -116,7 +116,7 @@ bool dpasSupportedShapes(DpasOp op) {
   auto k = lhsShape[1] * lhsShape[2];
   auto n = rhsShape[1];
 
-  if ((lhsElemType.isF16() || lhsElemType.isBF16()) && m <= MAX_TM_SIZE &&
+  if ((lhsElemType.isF16() || lhsElemType.isBF16() || lhsElemType.isInteger(16)) && m <= MAX_TM_SIZE &&
       n == TN_SIZE && k == TK_SIZE_FOR_D16) {
     return true;
   }

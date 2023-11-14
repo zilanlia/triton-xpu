@@ -175,6 +175,16 @@ public:
     auto result = xeGPUTypeConverter.convertType(op.getType(), resultTypes);
     auto retType = resultTypes[0];
 
+    Type elemType;
+    Type newRetType;
+    if(isa<VectorType>(retType)){
+      elemType = retType.cast<VectorType>().getElementType();
+      auto shape = retType.cast<VectorType>().getShape();
+      if(elemType == bf16Type){
+        elemType = i16Type;
+      }
+      newRetType = VectorType::get(shape, elemType);
+    }
     // llvm::outs() << "\n\nArithTruncFPattern retType: " << retType << "\n";
     // llvm::outs() << "\n\nArithConstant retType: " << resultTypes.size() << "\n";
 
@@ -193,6 +203,9 @@ public:
         auto size = resultTypes.size();
         for(int i = 0; i < size;i++){
           Value truncFVal = rewriter.create<arith::TruncFOp>(loc, retType, in[i]);
+          if(elemType == i16Type){
+            truncFVal = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, newRetType, truncFVal)->getResults()[0];
+          }
           truncFVals.push_back(truncFVal);
         }
 
@@ -205,9 +218,14 @@ public:
         rewriter.replaceOp(op, newValueRange);
 
       } else {
-        addNamedAttrs(
-          rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, retType, in[0]),
-          adaptor.getAttributes());
+        Value truncFVal = rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, retType, in[0]);
+        if(elemType == i16Type){
+          truncFVal = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, newRetType, truncFVal)->getResults()[0];
+        }
+        rewriter.replaceOp(op, truncFVal);
+        // addNamedAttrs(
+        //   rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, retType, in[0]),
+        //   adaptor.getAttributes());
       }
     }
 
@@ -264,22 +282,28 @@ public:
     llvm::SmallVector<mlir::Type> resultTypes;
     auto result = xeGPUTypeConverter.convertType(value.getType(), resultTypes);
 
-    Type elemType = resultTypes[0];
-    int elemNum = elemType.dyn_cast<VectorType>().getShape()[0];
+    Type loadType = resultTypes[0];
+    int elemNum = loadType.dyn_cast<VectorType>().getShape()[0];
 
-    if(mmaFlag == 0){
-      auto vectorType = elemType.dyn_cast<VectorType>();
-      elemType = VectorType::get(ArrayRef<int64_t>{32, 8, 2}, vectorType.getElementType());
-    } else if(mmaFlag == 1) {
-      auto vectorType = elemType.dyn_cast<VectorType>();
-      elemType = VectorType::get(ArrayRef<int64_t>{16, 16, 2}, vectorType.getElementType());
-    } else if(mmaFlag == 3){
-      auto vectorType = elemType.dyn_cast<VectorType>();
-      elemType = VectorType::get(ArrayRef<int64_t>{16, 16, 1}, vectorType.getElementType());
-    } else{
+    if(mmaFlag != -1){
+      auto vectorType = loadType.dyn_cast<VectorType>();
+      Type elemType = vectorType.getElementType();
+
+      if(elemType == bf16Type){
+        elemType = i16Type;
+      }
+
+      if(mmaFlag == 0){
+        loadType = VectorType::get(ArrayRef<int64_t>{32, 8, 2}, elemType);
+      } else if(mmaFlag == 1) {
+        loadType = VectorType::get(ArrayRef<int64_t>{16, 16, 2}, elemType);
+      } else if(mmaFlag == 3){
+        loadType = VectorType::get(ArrayRef<int64_t>{16, 16, 1}, elemType);
+      } else{
+      }
     }
 
-    // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]elemType: "<<elemType<<"\n";
+    // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]loadType: "<<loadType<<"\n";
     // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]nElem: "<<nElem<<"\n";
     auto L1_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
     auto L2_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
@@ -292,10 +316,10 @@ public:
         Value ret;
         if(mmaFlag == 0){ //load matrix A for gemm
           auto vnni = IntegerAttr::get(i32_ty, 1);
-          ret = rewriter.create<xegpu::LoadNDOp>(loc, elemType, desc[i], vnni, DenseI64ArrayAttr{}, L1_hint, L2_hint, L3_hint);
+          ret = rewriter.create<xegpu::LoadNDOp>(loc, loadType, desc[i], vnni, DenseI64ArrayAttr{}, L1_hint, L2_hint, L3_hint);
         } else if(mmaFlag == 1){ //load matrix B for gemm
           auto vnni = IntegerAttr::get(i32_ty, 0);
-          ret = rewriter.create<xegpu::LoadNDOp>(loc, elemType, desc[i], vnni, DenseI64ArrayAttr{}, L1_hint, L2_hint, L3_hint);
+          ret = rewriter.create<xegpu::LoadNDOp>(loc, loadType, desc[i], vnni, DenseI64ArrayAttr{}, L1_hint, L2_hint, L3_hint);
         } else if(mmaFlag == 3){ //prefetch for gemm
 
         } else{
@@ -319,12 +343,10 @@ public:
           mask = rewriter.create<spirv::ConstantOp>(loc, maskType, constData);
         }
 
-        Value ret = rewriter.create<xegpu::LoadGatherOp>(loc, elemType, desc0, mask, IntegerAttr{}, DenseI64ArrayAttr{}, L1_hint, L2_hint, L3_hint);
+        Value ret = rewriter.create<xegpu::LoadGatherOp>(loc, loadType, desc0, mask, IntegerAttr{}, DenseI64ArrayAttr{}, L1_hint, L2_hint, L3_hint);
         // llvm::outs()<<"\n\nxegpu::LoadGatherOp: " << ret <<"\n";
         rewriter.replaceOp(op, ret);
       } else if(mmaFlag == 3){
-        // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc0: "<<desc0<<"\n";
-        // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc[0]: "<<desc[0]<<"\n";
         rewriter.create<xegpu::PrefetchNDOp>(loc, desc0, L1_hint, L2_hint, L3_hint);
         rewriter.eraseOp(op);
       }
@@ -345,7 +367,6 @@ public:
     auto context = rewriter.getContext();
 
     ValueRange desc{adaptor.getPtr()};
-    // llvm::outs()<<"\n\ndesc: " << desc[0] <<"\n";
     if(auto *parentOp = desc[0].getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
         desc = (&castOp)->getInputs();
@@ -355,7 +376,6 @@ public:
     Value gatherStoreDesc = desc[0];
 
     ValueRange value{adaptor.getValue()};
-    // llvm::outs()<<"\n\nvalue: " << value[0] <<"\n";
     if(auto *parentOp = value[0].getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
         value = (&castOp)->getInputs();
@@ -389,9 +409,9 @@ public:
       Value ret = rewriter.create<xegpu::StoreScatterOp>(loc, data, gatherStoreDesc, mask, L1_hint, L2_hint, L3_hint).getODSResults(0)[0];
       rewriter.replaceOp(op, ret);
     }
-    // auto module = op.getOperation()->getParentOfType<ModuleOp>();
-    // llvm::outs()<<"\n\n[Module] after StoreOp: ";
-    // module.print(llvm::outs());
+    auto module = op.getOperation()->getParentOfType<ModuleOp>();
+    llvm::outs()<<"\n\n[Module] after StoreOp: ";
+    module.print(llvm::outs());
     return success();
   }
 };
@@ -716,6 +736,10 @@ public:
       } 
     }
 
+    if(elemType == bf16Type){
+      elemType = i16Type;
+    }
+
     Optional<spirv::StorageClass> storageClass = spirv::StorageClass::CrossWorkgroup;
     auto spirvPtrType = spirv::PointerType::get(elemType, *storageClass);
     Value addr = rewriter.create<UnrealizedConversionCastOp>(loc, spirvPtrType, blockPtr).getResult(0);
@@ -934,6 +958,10 @@ public:
     auto aDpasM = aThreadShape[0] * aElemShape[0];
     auto aDpasK = aThreadShape[1] * aElemShape[1];
     auto aLoadSize = aDpasM * aDpasK;
+
+    if(elemType == bf16Type){
+      elemType = i16Type;
+    }
 
     auto aCombinedLoadNum = aLoadM / aDpasM;
     auto aDpasType = VectorType::get({aDpasM, aLoadShape[1], aLoadShape[2]}, elemType);
