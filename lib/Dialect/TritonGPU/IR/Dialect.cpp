@@ -1542,8 +1542,10 @@ struct TritonGPUInferLayoutInterface
   LogicalResult
   inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,
                         Attribute &resultEncoding) const override {
-    resultEncoding = SliceEncodingAttr::get(getDialect()->getContext(), axis,
-                                            operandEncoding);
+    // resultEncoding = SliceEncodingAttr::get(getDialect()->getContext(), axis,
+    //                                         operandEncoding);
+    auto genericEncoding = operandEncoding.dyn_cast<GenericEncodingAttr>();
+    resultEncoding = genericEncoding;
     return success();
   }
 
@@ -1569,14 +1571,16 @@ struct TritonGPUInferLayoutInterface
   inferExpandDimsOpEncoding(Attribute operandEncoding, unsigned axis,
                             Attribute &resultEncoding,
                             std::optional<Location> location) const override {
-    auto sliceEncoding = operandEncoding.dyn_cast<SliceEncodingAttr>();
-    if (!sliceEncoding)
-      return emitOptionalError(
-          location, "ExpandDimsOp operand encoding must be SliceEncodingAttr");
-    if (sliceEncoding.getDim() != axis)
-      return emitOptionalError(
-          location, "Incompatible slice dimension for ExpandDimsOp operand");
-    resultEncoding = sliceEncoding.getParent();
+    // auto sliceEncoding = operandEncoding.dyn_cast<SliceEncodingAttr>();
+    // if (!sliceEncoding)
+    //   return emitOptionalError(
+    //       location, "ExpandDimsOp operand encoding must be SliceEncodingAttr");
+    // if (sliceEncoding.getDim() != axis)
+    //   return emitOptionalError(
+    //       location, "Incompatible slice dimension for ExpandDimsOp operand");
+    // resultEncoding = sliceEncoding.getParent();
+    auto genericEncoding = operandEncoding.dyn_cast<GenericEncodingAttr>();
+    resultEncoding = genericEncoding;
     return success();
   }
 

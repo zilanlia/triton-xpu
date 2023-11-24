@@ -24,6 +24,7 @@ using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::spirv;
 using namespace mlir::triton::xegpu;
+using mlir::triton::gpu::GenericEncodingAttr;
 
 class ReduceOpToXeGPUPattern : public OpConversionPattern<triton::ReduceOp> {
 public:
@@ -34,9 +35,14 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     auto src = adaptor.getOperands()[0];
-    auto type = op.getResult().getType();
+    Type type = op.getResult()[0].getType();
 
-    return createSLMReduceOp(rewriter, adaptor, op);
+    //todo combine the two func
+    if(isa<RankedTensorType>(type)){
+      return VectorNDReduceOp(rewriter, adaptor, op);
+    } else{
+      return Vector1DReduceOp(rewriter, adaptor, op);
+    }
   }
 
 private:
@@ -45,7 +51,7 @@ private:
     if (isa<arith::AddIOp>(reduceOp))
       acc = add(acc, cur);
     else if (isa<arith::AddFOp>(reduceOp))
-      acc = fadd(acc.getType(), acc, cur);
+      acc = rewriter.create<arith::AddFOp>(loc, acc.getType(), acc, cur);
     else if (isa<arith::MinSIOp>(reduceOp))
       acc = smin(acc, cur);
     else if (isa<arith::MaxSIOp>(reduceOp))
@@ -57,14 +63,14 @@ private:
     else if (isa<arith::MinFOp>(reduceOp))
       acc = fmin(acc, cur);
     else if (isa<arith::MaxFOp>(reduceOp))
-      acc = fmax(acc, cur);
+      acc = rewriter.create<arith::MaxFOp>(loc, acc.getType(), acc, cur);
     else if (isa<arith::XOrIOp>(reduceOp))
       acc = xor_(acc, cur);
     else
       llvm::report_fatal_error("Unsupported reduce op");
   }
 
-  LogicalResult createSLMReduceOp(ConversionPatternRewriter &rewriter, 
+  LogicalResult Vector1DReduceOp(ConversionPatternRewriter &rewriter, 
                         OpAdaptor adaptor, triton::ReduceOp op) const {
     Location loc = op->getLoc();
     auto context = rewriter.getContext();
@@ -212,6 +218,121 @@ private:
 
     llvm::outs()<<"\n\nacc: "<<acc<<"\n";
     rewriter.replaceOp(op, acc);
+    return success();
+  }
+
+  LogicalResult VectorNDReduceOp(ConversionPatternRewriter &rewriter, 
+                        OpAdaptor adaptor, triton::ReduceOp op) const {
+    Location loc = op->getLoc();
+    auto context = rewriter.getContext();
+    uint32_t axis = op.getAxis();
+
+    auto layout =  op.getOperands()[0].getType()
+                      .cast<RankedTensorType>().getEncoding()
+                      .cast<GenericEncodingAttr>();
+    auto threadShape = layout.getThreadShape();
+    auto threadStride = layout.getThreadStride();
+    auto elemShape = layout.getElemPerThread();
+    auto elemStride = layout.getElemStride();
+
+    auto operands = adaptor.getOperands();
+    ValueRange src(operands);
+
+    if(auto *parentOp = src[0].getDefiningOp()){
+      if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
+        auto cast = (&castOp)->getInputs();
+        src = ValueRange(cast);
+      }
+    }
+
+    VectorType vectorType = src[0].getType().cast<VectorType>();
+    Type elemType = vectorType.getElementType();
+    auto shape = vectorType.getShape();
+
+    Block *block = &(*op.getCombineOp().begin());
+    Operation *yield = block->getTerminator();
+    Operation *reduceOp = yield->getOperand(0).getDefiningOp();
+
+    auto loadL1Hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
+    auto loadL2Hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
+    auto loadL3Hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
+    auto storeL1Hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
+    auto storeL2Hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
+    auto storeL3Hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
+
+    //get subgroupId
+    Value subgroubId = rewriter.create<::mlir::gpu::SubgroupIdOp>(loc, rewriter.getIndexType());
+    Value sgId = rewriter.create<UnrealizedConversionCastOp>(loc, i64_ty, subgroubId).getResult(0);
+    sgId = rewriter.create<spirv::UConvertOp>(loc, i32_ty, sgId);
+
+    //get subgroup size and workgroup size
+    auto module = op.getOperation()->getParentOfType<mlir::ModuleOp>();
+    int sgSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
+    int wgSize = triton::gpu::TritonGPUDialect::getNumWarps(module);
+
+    int accNums;
+    int accBlockNums;
+    int accLens;
+    if(axis == 1){
+      accNums = elemShape[2];
+      accBlockNums = elemShape[3];
+      accLens = shape[1];
+    } else {
+      //todo
+    }
+    SmallVector<Value> acc(accNums);
+
+    Value cur;
+    Type curVecType = src[0].getType();
+
+    // reduce within different blocks
+    for(int i = 0; i < accNums; i++){
+      acc[i] = src[i * accBlockNums];
+      curVecType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], shape[1], 1}, elemType);
+      acc[i] = rewriter.create<vector::ShapeCastOp>(loc, curVecType, acc[i]);
+
+      for(int j = 1; j < accBlockNums; j++){
+        cur = src[i * accBlockNums + j];
+        cur = rewriter.create<vector::ShapeCastOp>(loc, curVecType, cur);
+        accumulate(rewriter, loc, reduceOp, acc[i], cur);
+      }
+
+      for (unsigned N = accLens / 2; N > 0; N >>= 1) {
+        curVecType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], N, 1}, elemType);
+
+        SmallVector<int32_t, 2> indices(shape[0] * N);
+        for(int d0 = 0;d0 < shape[0];d0++){
+          for(int d1 = 0; d1 < N; d1++){
+            indices[d0 * N + d1] = d0 * (N * 2) + N + d1;
+          }
+        }
+
+        cur = rewriter.create<spirv::VectorShuffleOp>(loc, curVecType, acc[i], acc[i], rewriter.getI32ArrayAttr(indices));
+
+        for(int d0 = 0;d0 < shape[0];d0++){
+          for(int d1 = 0; d1 < N; d1++){
+            indices[d0 * N + d1] = d0 * (N * 2) + d1;
+          }
+        }
+
+        acc[i] = rewriter.create<spirv::VectorShuffleOp>(loc, curVecType, acc[i], acc[i], rewriter.getI32ArrayAttr(indices));
+
+        accumulate(rewriter, loc, reduceOp, acc[i], cur);
+      }
+    }
+
+    for(int i = 1; i < accNums; i++){
+      auto nElem = (i + 1) * shape[0]; 
+      curVecType = mlir::VectorType::get(nElem, elemType);
+      SmallVector<int32_t, 2> indices(nElem);
+      uint64_t offset = 0;
+      std::iota(indices.begin(), indices.end(), offset);
+      acc[0] = rewriter.create<spirv::VectorShuffleOp>(loc, curVecType, acc[0], acc[i], rewriter.getI32ArrayAttr(indices));
+    }
+
+
+    llvm::outs()<<"\n\nacc: "<<acc[0]<<"\n";
+    rewriter.replaceOp(op, acc[0]);
     return success();
   }
 };

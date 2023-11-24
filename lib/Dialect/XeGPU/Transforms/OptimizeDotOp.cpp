@@ -34,6 +34,11 @@ LogicalResult checkDotOp(scf::ForOp forOp){
     if (auto dotOp = dyn_cast<xegpu::DpasOp>(op))
       dotsInFor.push_back(dotOp);
 
+  if (dotsInFor.size() > 1){
+    llvm::outs() << "\n\n[OptimizeDotOp][More than 1 dpasOp in For Loop]\n";
+    return failure();
+  }
+
   if (dotsInFor.empty()){
     llvm::outs() << "\n\n[OptimizeDotOp][No dpasOp in For Loop]\n";
     return failure();

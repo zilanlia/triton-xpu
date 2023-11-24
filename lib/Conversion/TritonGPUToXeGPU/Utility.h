@@ -7,6 +7,7 @@
 
 // Shortcuts for some commonly used LLVM ops to keep code simple and intuitive
 // Operators
+#define urcast(...) rewriter.create<mlir::UnrealizedConversionCastOp>(loc, __VA_ARGS__)
 #define inttoptr(...) rewriter.create<spirv::ConvertUToPtrOp>(loc, __VA_ARGS__)
 #define ptrtoint(...) rewriter.create<spirv::ConvertPtrToUOp>(loc, __VA_ARGS__)
 #define zext(...) rewriter.create<spirv::UConvertOp>(loc, __VA_ARGS__)

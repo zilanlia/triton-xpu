@@ -38,7 +38,7 @@ public:
   LogicalResult
   matchAndRewrite(Op op, typename Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    //llvm::outs() << "\n\n[GenericOpPattern] op: " << op << "\n";
+    llvm::outs() << "\n\n[GenericOpPattern] op: " << op << "\n";
     Location loc = op.getLoc();
     Type type = op.getType();
     auto context = op.getContext();
@@ -46,35 +46,41 @@ public:
     llvm::SmallVector<mlir::Type> resultTypes;
     auto result = xeGPUTypeConverter.convertType(op.getType(), resultTypes);
     auto retType = resultTypes[0];
-
+    llvm::outs()<<"\n\n[GenericOpPattern]retType: "<<retType<<"\n";
     int srcNum = 1;
     auto operands = adaptor.getOperands();
-    auto operand0 = operands[0];
+    Value operand0 = operands[0];
+    ValueRange src0(operand0);
 
-    ValueRange src0{operand0};
-    ValueRange src1;
-    if(operands.size() > 1){
-      auto operand1 = operands[1];
-      src1 = ValueRange{operand1};
-      srcNum = 2;
-    }
-
+    //llvm::outs()<<"\n\n[GenericOpPattern]operands.size(): "<<operands.size()<<"\n";
+    llvm::outs()<<"\n\n[GenericOpPattern]src0[0]: "<<src0[0]<<"\n";
     if(auto *parentOp = src0[0].getDefiningOp()){
+      //llvm::outs()<<"\n\n*parentOp: "<<*parentOp<<"\n";
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
         auto inputs =  (&castOp)->getInputs();
-        src0 = ValueRange{inputs};
+        src0 = ValueRange(inputs);
       }
+    }
+
+    ValueRange src1;
+
+    if(operands.size() > 1){
+      Value operand1 = operands[1];
+      src1 = ValueRange(operand1);
+      srcNum = 2;
+      llvm::outs()<<"\n\n[GenericOpPattern]src1[0]: "<<src1[0]<<"\n";
     }
 
     if(src1.size() != 0){
       if(auto *parentOp = src1[0].getDefiningOp()){
         if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
           auto inputs =  (&castOp)->getInputs();
-          src1 = ValueRange{inputs};
+          src1 = ValueRange(inputs);
         }
       }
     }
 
+    llvm::outs()<<"\n\n[GenericOpPattern]resultTypes.size(): "<<resultTypes.size()<<"\n";
     if(resultTypes.size() > 1){
       SmallVector<Value> retVec;
       Value ret;
@@ -83,11 +89,41 @@ public:
 
       for(int i = 0; i < size; i++){
         SmallVector<Value> args;
-        args.push_back(src0[i]);
+        Value operand0 = src0[i];
+        Value operand1;
+
         if(srcNum==2){
-          args.push_back(src1[i]);
-        } else {
-          ret = rewriter.create<Op>(loc, newType, args);
+          operand1 = src1[i];
+        }
+
+        auto srcType = src0[i].getType();
+        if(isa<VectorType>(srcType)){
+          auto shape = srcType.cast<VectorType>().getShape();
+          auto srcElemType = srcType.cast<VectorType>().getElementType();
+          auto retElemType = newType.cast<VectorType>().getElementType();
+          int nElem = 1;
+          for(auto s : shape) 
+            nElem *= s;
+          auto castSrcType = VectorType::get(nElem, srcElemType);
+          //operand0 = rewriter.create<vector::ShapeCastOp>(loc, castSrcType, operand0);
+          operand0 = urcast(castSrcType, operand0)->getResults()[0];
+          if(srcNum==2){
+            //operand1 = rewriter.create<vector::ShapeCastOp>(loc, castSrcType, operand1);
+            operand1 = urcast(castSrcType, operand1)->getResults()[0];
+          }
+          newType = VectorType::get(nElem, retElemType);
+        }
+
+        args.push_back(operand0);
+        if(srcNum==2){
+          args.push_back(operand1);
+        }
+        ret = rewriter.create<Op>(loc, newType, args);
+
+        if(isa<VectorType>(srcType)){
+          newType = resultTypes[0];
+          //ret = rewriter.create<vector::ShapeCastOp>(loc, newType, ret);
+          ret = urcast(newType, ret)->getResults()[0];
         }
         retVec.push_back(ret);
       }
@@ -95,13 +131,14 @@ public:
       ValueRange newValueRange(retVec);
       auto resultTys = op->getResultTypes();
       auto castOp = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newValueRange)->getResults();
-      newValueRange = ValueRange{castOp};
+      newValueRange = ValueRange(castOp);
       rewriter.replaceOp(op, castOp);
     } else {
       addNamedAttrs(
           rewriter.replaceOpWithNewOp<Op>(op, retType, adaptor.getOperands()),
           adaptor.getAttributes());
     }
+    llvm::outs()<<"\n\n[GenericOpPattern] End\n";
     return success();
   }
 };
@@ -267,6 +304,9 @@ public:
     auto shape = tensorType.getShape();
     auto layout = encoding.cast<GenericEncodingAttr>();
     auto mmaFlag = layout.getMmaFlag();
+    auto threadShape = layout.getThreadShape();
+    auto elemShape = layout.getElemPerThread();
+    auto elemStride = layout.getElemStride();
 
     if(auto *parentOp = desc[0].getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
@@ -293,22 +333,29 @@ public:
         elemType = i16Type;
       }
 
+      int dim0 = threadShape[0] * elemShape[0];
+      int dim1 = threadShape[1] * elemShape[1];
       if(mmaFlag == 0){
-        loadType = VectorType::get(ArrayRef<int64_t>{32, 8, 2}, elemType);
+        int loadM = shape[0] / threadShape[2];
+        loadM = std::min(std::max(loadM, dim0), 32);
+
+        loadType = VectorType::get(ArrayRef<int64_t>{loadM, dim1 / 2, 2}, elemType);
       } else if(mmaFlag == 1) {
-        loadType = VectorType::get(ArrayRef<int64_t>{16, 16, 2}, elemType);
+        int loadK = shape[0];
+        loadK = std::min(std::max(loadK, dim0), 32);
+
+        loadType = VectorType::get(ArrayRef<int64_t>{loadK / 2, dim1, 2}, elemType);
       } else if(mmaFlag == 3){
         loadType = VectorType::get(ArrayRef<int64_t>{16, 16, 1}, elemType);
       } else{
       }
     }
 
-    // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]loadType: "<<loadType<<"\n";
-    // llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]nElem: "<<nElem<<"\n";
+    llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]loadType: "<<loadType<<"\n";
+    llvm::outs()<<"\n\n[LoadOpToXeGPUPattern]nElem: "<<nElem<<"\n";
     auto L1_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
     auto L2_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
     auto L3_hint = CacheReadHintAttr::get(context, CacheReadHint::CACHED);
-    //llvm::outs()<<"\n\n[LoadOpToXeGPUPattern] desc[0]: "<<desc[0]<<"\n";
 
     if(nElem > 1){
       SmallVector<Value> newValues;
@@ -362,11 +409,13 @@ public:
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::outs()<<"\n\nStoreOpToXeGPUPattern: \n";
+    llvm::outs()<<"\n\n[StoreOpToXeGPUPattern]\n";
     auto loc = op->getLoc();
     auto context = rewriter.getContext();
 
-    ValueRange desc{adaptor.getPtr()};
+    auto ptrRange = adaptor.getPtr();
+    llvm::outs()<<"\n\n[StoreOpToXeGPUPattern]ptrRange: " << ptrRange <<"\n";
+    ValueRange desc(ptrRange);
     if(auto *parentOp = desc[0].getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
         desc = (&castOp)->getInputs();
@@ -375,7 +424,8 @@ public:
 
     Value gatherStoreDesc = desc[0];
 
-    ValueRange value{adaptor.getValue()};
+    auto valueRange = adaptor.getValue();
+    ValueRange value(valueRange);
     if(auto *parentOp = value[0].getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
         value = (&castOp)->getInputs();
@@ -383,6 +433,8 @@ public:
     }
 
     Value data = value[0];
+    llvm::outs()<<"\n\n[StoreOpToXeGPUPattern]data: " << data <<"\n";
+    llvm::outs()<<"\n\n[StoreOpToXeGPUPattern]value.size(): " << value.size() <<"\n";
 
     auto newType = data.getType();
     int elemNum = newType.dyn_cast<VectorType>().getShape()[0];
@@ -391,6 +443,8 @@ public:
     auto L2_hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
     auto L3_hint = CacheWriteHintAttr::get(context, CacheWriteHint::WRITE_BACK);
 
+    llvm::outs()<<"\n\n[StoreOpToXeGPUPattern]desc[0]: " << desc[0] <<"\n";
+    llvm::outs()<<"\n\n[StoreOpToXeGPUPattern]desc.size(): " << desc.size() <<"\n";
     if(desc.size() > 1){
       for(int i = 0; i < desc.size(); i++){
         rewriter.create<xegpu::StoreNDOp>(loc, desc[i], value[i], L1_hint, L2_hint, L3_hint);
@@ -401,7 +455,7 @@ public:
       if(Value m = adaptor.getMask()){
         mask = m;
       } else {
-        auto maskType = mlir::VectorType::get(elemNum, i32Type);
+        auto maskType = mlir::VectorType::get(elemNum, i1Type);
         DenseElementsAttr constData = DenseElementsAttr::get(maskType, ArrayRef<int>(std::vector<int>(elemNum, 1)));
         mask = rewriter.create<spirv::ConstantOp>(loc, maskType, constData);
       }
@@ -409,9 +463,9 @@ public:
       Value ret = rewriter.create<xegpu::StoreScatterOp>(loc, data, gatherStoreDesc, mask, L1_hint, L2_hint, L3_hint).getODSResults(0)[0];
       rewriter.replaceOp(op, ret);
     }
-    auto module = op.getOperation()->getParentOfType<ModuleOp>();
-    llvm::outs()<<"\n\n[Module] after StoreOp: ";
-    module.print(llvm::outs());
+    // auto module = op.getOperation()->getParentOfType<ModuleOp>();
+    // llvm::outs()<<"\n\n[Module] after StoreOp: ";
+    // module.print(llvm::outs());
     return success();
   }
 };
@@ -430,28 +484,36 @@ public:
     Value sgId = rewriter.create<UnrealizedConversionCastOp>(loc, i64_ty, subgroubId).getResult(0);
     sgId = rewriter.create<spirv::UConvertOp>(loc, i32_ty, sgId);
 
-    //Value sgId = zext(i32_ty, subgroubId);
+    TritonGPUToXeGPUTypeConverter xeGPUTypeConverter(*context);
+    llvm::SmallVector<mlir::Type> resultTypes;
+
+    Type retType = op.getResult().getType();
+    auto result = xeGPUTypeConverter.convertType(retType, resultTypes);
+    auto newShape = resultTypes[0].cast<VectorType>().getShape();
+    int nElem = newShape[0];
+
     //to do replace 32 with subgroup nums
     auto subGroupNums = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(32));
     sgId = urem(sgId, subGroupNums);
-    auto module = op.getOperation()->getParentOfType<ModuleOp>();
-    int sgSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
+    // auto module = op.getOperation()->getParentOfType<ModuleOp>();
+    // int sgSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
+
     auto sgAddr = rewriter.create<arith::MulIOp>(loc, i32_ty, sgId, 
-      rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(sgSize)));
-    auto type = mlir::VectorType::get(sgSize, i32Type);
+      rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(nElem)));
+    auto type = mlir::VectorType::get(nElem, i32_ty);
 
     //avoid spirv.CompositeConstruct
-    Value sgAddrs = rewriter.create<spirv::UndefOp>(loc, v32i32Type);
+    Value sgAddrs = rewriter.create<spirv::UndefOp>(loc, type);
     auto idx0 = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
     sgAddrs =
         rewriter.create<spirv::VectorInsertDynamicOp>(loc, sgAddrs, sgAddr, idx0);
-    SmallVector<int32_t, 32> indices(32, 0);
+    SmallVector<int32_t> indices(nElem, 0);
     sgAddrs = rewriter.create<spirv::VectorShuffleOp>(
-          loc, v32i32Type, sgAddrs, sgAddrs, rewriter.getI32ArrayAttr(indices));
+          loc, type, sgAddrs, sgAddrs, rewriter.getI32ArrayAttr(indices));
 
     llvm::outs()<<"\n\nsgAddrs: "<<sgAddrs<<"\n";
-    std::vector<int> values(sgSize, 0);
-    for(int i = 0; i < sgSize;i++){
+    std::vector<int> values(nElem, 0);
+    for(int i = 0; i < nElem; i++){
       values[i] = i;
     }
     ArrayRef<int> arrayRef(values);
@@ -470,7 +532,7 @@ public:
   LogicalResult
   matchAndRewrite(triton::AddPtrOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::outs()<<"\n\nAddPtrOpToXeGPUPattern: \n";
+    llvm::outs()<<"\n\n[AddPtrOpToXeGPUPattern]\n";
     auto loc = op->getLoc();
     auto context = rewriter.getContext();
 
@@ -478,19 +540,44 @@ public:
     ::llvm::ArrayRef<int64_t> shape;
     Value ptr = adaptor.getPtr();
     Value offset = adaptor.getOffset();
+    llvm::outs()<<"\n\n[AddPtrOpToXeGPUPattern]ptr: " << ptr <<"\n";
+    llvm::outs()<<"\n\n[AddPtrOpToXeGPUPattern]offset: " << offset <<"\n";
 
     Type offsetType = offset.getType();
-    if(offsetType.isa<IntegerType>()){
+    if(isa<IntegerType>(offsetType)){
+      // Type ptrType = ptr.getType();
+      // Value addr = ptr;
+      // if(!isa<IntegerType>(ptrType)){
+      //   Type elemType = ptrType.cast<MemRefType>().getElementType();
+      //   Optional<spirv::StorageClass> storageClass = spirv::StorageClass::CrossWorkgroup;
+      //   auto spirvPtrType = spirv::PointerType::get(elemType, *storageClass);
+      //   addr = rewriter.create<UnrealizedConversionCastOp>(loc, spirvPtrType, ptr).getResult(0);
+      //   addr = rewriter.create<spirv::ConvertPtrToUOp>(loc, i64_ty, addr);
+      // }
+
+      // if(offsetType != i64_ty)
+      //   offset = zext(i64_ty, offset);
+      // addr = add(addr, offset);
+      // rewriter.replaceOp(op, addr);
       return success();
     }
 
+    ptr = op.getPtr();
     auto ptrType = ptr.getType();
     bool isPtr = ptrType.isa<mlir::MemRefType>();
 
+    llvm::SmallVector<mlir::Type> resultTypes;
+    TritonGPUToXeGPUTypeConverter xeGPUTypeConverter(*context);
+    auto value = op.getResult();
+    auto result = xeGPUTypeConverter.convertType(offsetType, resultTypes);
+    auto newType = resultTypes[0];
+    llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]resultTypes[0]: "<<resultTypes[0]<<"\n";
+    auto size = resultTypes[0].cast<VectorType>().getShape()[0];
+
     while(auto curOp = ptr.getDefiningOp()){
-      // llvm::outs()<<"\n\ncurOp: "<<*curOp<<"\n";
-      // llvm::outs()<<"\n\nptr: "<<ptr<<"\n";
-      // llvm::outs()<<"\n\nptrType: "<<ptrType<<"\n";
+      // llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]curOp: "<<*curOp<<"\n";
+      // llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]ptr: "<<ptr<<"\n";
+      // llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]ptrType: "<<ptrType<<"\n";
       if(auto createDescOp = dyn_cast_or_null<CreateDescOp>(curOp)){
         curDesc = ptr;
         Value ret = rewriter.create<xegpu::UpdateOffsetOp>(loc, ptr.getType(), curDesc, offset);
@@ -503,52 +590,44 @@ public:
           ptr = castOp->getOperand(0);
         }
         ptrType = ptr.getType();
-        llvm::outs() << "\n\nptr: "<< ptr << "\n";
+        llvm::outs() << "\n\n[AddPtrOpToXeGPUPattern]ptr: "<< ptr << "\n";
 
         Value originalOffsetVec = rewriter.create<spirv::UndefOp>(loc, offsetType);
         auto idx0 = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
         originalOffsetVec = rewriter.create<spirv::VectorInsertDynamicOp>(loc, 
                                               originalOffsetVec, originalOffset, idx0);
-        SmallVector<int32_t, 32> indices(32, 0);
+        SmallVector<int32_t> indices(size, 0);
         originalOffsetVec = rewriter.create<spirv::VectorShuffleOp>(
               loc, offsetType, originalOffsetVec, originalOffsetVec, rewriter.getI32ArrayAttr(indices));
 
         //Value originalOffsetVec = rewriter.create<vector::SplatOp>(loc, offsetType, originalOffset);
         offset = rewriter.create<arith::AddIOp>(loc, offsetType, offset, originalOffsetVec);
-        llvm::outs() << "\n\noffset: "<< offset << "\n";
+        llvm::outs() << "\n\n[AddPtrOpToXeGPUPattern]offset: "<< offset << "\n";
         break;
       }
       ptr = curOp->getOperand(0);
       ptrType = ptr.getType();
     }
 
-    llvm::outs() << "\n\nptrType: "<< ptrType << "\n";
-    auto elemType = ptrType.dyn_cast<mlir::MemRefType>().getElementType();
-    llvm::outs() << "\n\nelemType: "<< elemType << "\n";
-    auto newType = mlir::VectorType::get(32, elemType);
-    
+    Type elemType = op.getPtr().getType().cast<RankedTensorType>().getElementType();
+    if(isa<triton::PointerType>(elemType)){
+      elemType = elemType.cast<triton::PointerType>().getPointeeType();
+    }
+    llvm::outs() << "\n\n[AddPtrOpToXeGPUPattern]elemType: "<< elemType << "\n";
 
     //get shape
-    if(auto rankType = op.getPtr().getType().dyn_cast<RankedTensorType>()){
-      shape = rankType.getShape();
-    }
-    
-    int size = shape.size()==0 ? 1 : shape.size();
-    std::vector<int64_t> newShape(size, 1);
-    if(shape.size()==0){
-      newShape[0] = 32;
-    } else {
-      for(int i = 0;i < shape.size(); i++){
-        newShape[0] = shape[0] / 32; 
-      }
+    if(auto type = offset.getType().cast<VectorType>()){
+      shape = type.getShape();
     }
 
-    auto tensorDescType = ::mlir::triton::xegpu::TensorDescType::get(context, newShape, elemType, ScatteredAttr::get(context));
+    llvm::outs() << "\n\n[AddPtrOpToXeGPUPattern]shape.size(): "<< shape.size() << "\n";
+    llvm::outs() << "\n\n[AddPtrOpToXeGPUPattern]shape[0]: "<< shape[0] << "\n";
+    auto tensorDescType = ::mlir::triton::xegpu::TensorDescType::get(context, shape, elemType, ScatteredAttr::get(context));
     auto memory_scope = MemoryScopeAttr::get(context, triton::xegpu::MemoryScope::GLOBAL);
     auto vert_size = IntegerAttr::get(i32_ty, 1);
 
     Value ret = rewriter.create<xegpu::CreateDescOp>(loc, tensorDescType, ptr, offset, memory_scope, vert_size);
-    llvm::outs() << "\n\nret: "<< ret << "\n";
+    llvm::outs() << "\n\n[AddPtrOpToXeGPUPattern]ret: "<< ret << "\n";
     rewriter.replaceOp(op, ret);
     return success();
   }
@@ -583,11 +662,13 @@ public:
     llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]\n";
     auto loc = op->getLoc();
     auto context = rewriter.getContext();
-
     auto src = adaptor.getSrc();
 
+    llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]src: " << src <<"\n";
+    llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]src.getType(): " << src.getType() <<"\n";
     if(src.getType().isa<mlir::MemRefType>()){
       auto memref = op.getSrc();
+      llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]memref: " << memref <<"\n";
       rewriter.replaceOp(op, memref);
       return success();
     }
@@ -597,25 +678,55 @@ public:
     auto elemType = tensorTy.getElementType();
     auto layout = tensorTy.getEncoding().dyn_cast<GenericEncodingAttr>();
 
-    auto module = op.getOperation()->getParentOfType<ModuleOp>();
-    int sgSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
+    TritonGPUToXeGPUTypeConverter xeGPUTypeConverter(*context);
+    llvm::SmallVector<mlir::Type> resultTypes;
 
-    //auto subGroupNum = tensorShape[0] / sgSize;
-    auto newType = mlir::VectorType::get(sgSize, elemType);
+    auto value = op.getResult();
+    auto result = xeGPUTypeConverter.convertType(value.getType(), resultTypes);
+    auto shape = resultTypes[0].cast<VectorType>().getShape();
+    int nElem = shape[0];
 
-    // Segmentation fault
-    // Value ret = rewriter.create<vector::SplatOp>(loc, newType, src);
+    Type newType;
+    Value ret;
+    if(tensorShape.size() == 1 && resultTypes.size() == 1){
+      newType = resultTypes[0];
 
-    // avoid spirv.CompositeConstruct
-    Value ret = rewriter.create<spirv::UndefOp>(loc, newType);
-    auto idx0 = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
-    ret = rewriter.create<spirv::VectorInsertDynamicOp>(loc, ret, src, idx0);
-    SmallVector<int32_t, 32> indices(32, 0);
-    ret = rewriter.create<spirv::VectorShuffleOp>(
-          loc, newType, ret, ret, rewriter.getI32ArrayAttr(indices));
+      ret = rewriter.create<spirv::UndefOp>(loc, newType);
+      auto idx0 = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
+      ret = rewriter.create<spirv::VectorInsertDynamicOp>(loc, ret, src, idx0);
+      SmallVector<int32_t> indices(nElem, 0);
+      llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]indices.size(): "<<indices.size()<<"\n";
+      ret = rewriter.create<spirv::VectorShuffleOp>(
+            loc, newType, ret, ret, rewriter.getI32ArrayAttr(indices));
+      llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]1d ret: "<<ret<<"\n";
+      rewriter.replaceOp(op, ret);
+    } else{
+      SmallVector<Value> newValues;
+      newType = resultTypes[0];
 
-    llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]ret: "<<ret<<"\n";
-    rewriter.replaceOp(op, ret);
+      // auto srcType = src.getType();
+      // ArrayRef<int64_t> srcShape{1};
+      // bool isVevtorSrc = 0;
+      // Type castType;
+      // if(isa<VectorType>(srcType)){
+      //   isVevtorSrc = 1;
+      //   srcShape = srcType.cast<VectorType>().getShape();
+      //   castType = VectorType::get(srcShape[0], elemType);
+      // }
+
+      for(int i = 0;i < resultTypes.size(); i++){
+        // if(isVevtorSrc && (srcShape.size() > 1))
+        //   src = rewriter.create<vector::ShapeCastOp>(loc, castType, src);
+        ret = rewriter.create<vector::BroadcastOp>(loc, newType, src);
+        newValues.push_back(ret);
+      }
+      mlir::ValueRange newValueRange(newValues);
+      auto resultTys = op->getResultTypes();
+      auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newValueRange)->getResults();
+      newValueRange = ValueRange(cast);
+      rewriter.replaceOp(op, newValueRange);
+    }
+
     return success();
   }
 };
@@ -720,6 +831,10 @@ public:
     auto tensorType = ptrType.getPointeeType().cast<RankedTensorType>();
     auto genericLayout = tensorType.getEncoding().cast<GenericEncodingAttr>();
     auto mmaFlag = genericLayout.getMmaFlag();
+    auto threadShape = genericLayout.getThreadShape();
+    auto elemShape = genericLayout.getElemPerThread();
+    auto elemStride = genericLayout.getElemStride();
+    auto threadStride = genericLayout.getThreadStride();
     auto elemType = tensorType.getElementType();
 
     auto blockShape = tensorType.getShape();
@@ -742,8 +857,42 @@ public:
 
     Optional<spirv::StorageClass> storageClass = spirv::StorageClass::CrossWorkgroup;
     auto spirvPtrType = spirv::PointerType::get(elemType, *storageClass);
-    Value addr = rewriter.create<UnrealizedConversionCastOp>(loc, spirvPtrType, blockPtr).getResult(0);
-    addr = rewriter.create<spirv::ConvertPtrToUOp>(loc, i64_ty ,addr);
+    Value addr;
+
+    // UnrealizedConversionCastOp castOp;
+
+    // if(auto *parentOp = addr.getDefiningOp()){
+    //   castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp);
+    //   addr = (&castOp)->getInputs()[0];
+    // }
+
+    //castOp.erase();
+    auto base = op.getBase();
+    if(auto *parentOp = base.getDefiningOp()){
+      if(auto addPtrOp = dyn_cast<AddPtrOp>(parentOp)){
+        auto ptr = addPtrOp.getPtr();
+        auto offset = addPtrOp.getOffset();
+        auto offsetType = offset.getType();
+
+        addr = rewriter.create<UnrealizedConversionCastOp>(loc, spirvPtrType, ptr).getResult(0);
+        addr = rewriter.create<spirv::ConvertPtrToUOp>(loc, i64_ty, addr);
+
+        if(offsetType != i64_ty)
+          offset = zext(i64_ty, offset);
+        addr = add(addr, offset);
+      }
+    } else{
+      addr = rewriter.create<UnrealizedConversionCastOp>(loc, spirvPtrType, blockPtr).getResult(0);
+      addr = rewriter.create<spirv::ConvertPtrToUOp>(loc, i64_ty ,addr);
+    }
+
+
+    //addr = rewriter.create<UnrealizedConversionCastOp>(loc, i64_ty, blockPtr).getResult(0);
+    // Type blockPtrType = blockPtr.getType();
+    // if(!isa<IntegerType>(blockPtrType)){
+    //   addr = rewriter.create<UnrealizedConversionCastOp>(loc, spirvPtrType, blockPtr).getResult(0);
+    //   addr = rewriter.create<spirv::ConvertPtrToUOp>(loc, i64_ty ,addr);
+    // }
 
     SmallVector<mlir::OpFoldResult> NdOffset = getI32SmallVector(rewriter, tensorOffsets);
 
@@ -776,23 +925,26 @@ public:
     Value gidM = udiv(sgId, i32_val(4));
     Value gidN = urem(sgId, i32_val(4));
 
-    int numRepM = 32 / blockM;
-    int numRepK = 32 / blockK;
-    int numRepN = 64 / blockN;
+    int dim0 = threadShape[0] * elemShape[0];
+    int dim1 = threadShape[1] * elemShape[1];
 
     SmallVector<mlir::OpFoldResult> curNdOffset = NdOffset;
     if(isLoad){
       if(mmaFlag == 0){ //load matrix A
-        int blockM = 32;
-        int blockK = 16;
+        int tensorM = elemShape[2] * elemStride[2];
+        int tensorK = elemShape[3] * elemStride[3];
+
+        int blockM = blockShape[0] / threadShape[2];
+        blockM = std::min(std::max(blockM, dim0), 32);
+        int blockK = dim1;
         Value offsetM = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(blockM));
         Value offsetK = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(blockK));
 
         tensorDescType = TensorDescType::get(context, ::llvm::ArrayRef<int64_t>{blockM, blockK}, elemType, 
                                                       MemoryScopeAttr::get(context, MemoryScope::GLOBAL));
         //llvm::outs()<<"\n\n[MakeTensorPtrOp] LoadA tensorDescType: "<<tensorDescType<<"\n";
-        int numRepM = 32 / blockM;
-        int numRepK = 32 / blockK;
+        int numRepM = tensorM / blockM;
+        int numRepK = tensorK / blockK;
 
         Value sgStartM = mul(gidM, i32_val(32));
         Value baseM = NdOffset[0].dyn_cast<mlir::Value>();
@@ -815,16 +967,20 @@ public:
         }
         resultTy = spirv::StructType::get(SmallVector<Type>(numRepM * numRepK, i64_ty));
       } else if(mmaFlag == 1){ //load matrix B
-        const int blockK = 32;
-        const int blockN = 16;
+        int tensorK = elemShape[2] * elemStride[2];
+        int tensorN = elemShape[3] * elemStride[3];
+
+        int blockK = blockShape[0];
+        blockK = std::min(std::max(blockK, dim0), 32);
+        int blockN = dim1;
         tensorDescType = TensorDescType::get(context, ::llvm::ArrayRef<int64_t>{blockK, blockN}, elemType, 
                                                       MemoryScopeAttr::get(context, MemoryScope::GLOBAL));
         //llvm::outs()<<"\n\n[MakeTensorPtrOp] LoadB tensorDescType: "<<tensorDescType<<"\n";
         Value offsetK = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(blockK));
         Value offsetN = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(blockN));
 
-        int numRepK = 32 / blockK;
-        int numRepN = 64 / blockN;
+        int numRepK = tensorK / blockK;
+        int numRepN = tensorN / blockN;
 
         Value sgStartN = mul(gidN, i32_val(64));
         Value baseN = NdOffset[1].dyn_cast<mlir::Value>();
@@ -832,7 +988,6 @@ public:
 
         for(int i = 0; i < numRepK; i++){
           for(int j = 0; j < numRepN; j++){
-
             Value baseK = NdOffset[0].dyn_cast<mlir::Value>();
             curNdOffset[0] = add(baseK, mul(offsetK, i32_val(i))).getResult();
             Value baseN = NdOffset[1].dyn_cast<mlir::Value>();
@@ -860,14 +1015,23 @@ public:
 
       }
     } else {
+      int tensorM = elemShape[2] * elemStride[2];
+      int tensorN = elemShape[3] * elemStride[3];
+
+      int blockM = dim0;
+      int blockN = dim1;
+
       tensorDescType = TensorDescType::get(context, ::llvm::ArrayRef<int64_t>{blockM, blockN}, elemType, 
                                                       MemoryScopeAttr::get(context, MemoryScope::GLOBAL));
-      Value sgStartM = mul(gidM, i32_val(32));
-      Value sgStartN = mul(gidN, i32_val(64));
+      Value sgStartM = mul(gidM, i32_val(tensorM));
+      Value sgStartN = mul(gidN, i32_val(tensorN));
       Value baseM = NdOffset[0].dyn_cast<mlir::Value>();
       Value baseN = NdOffset[1].dyn_cast<mlir::Value>();
       NdOffset[0] = add(sgStartM, baseM).getResult();
       NdOffset[1] = add(sgStartN, baseN).getResult();
+
+      int numRepM = tensorM / blockM;
+      int numRepN = tensorN / blockN;
 
       for(int i = 0; i < numRepM; i++){
         for(int j = 0; j < numRepN; j++){
@@ -890,7 +1054,7 @@ public:
 
     mlir::ValueRange newValueRange{newValues};
 
-    if(newValues.size()>1){
+    if(newValues.size() > 1){
       auto resultTys = op->getResultTypes();
       newValueRange = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newValueRange)->getResults();
     }
@@ -924,24 +1088,29 @@ public:
 
     if(auto *parentOp = matAValue.getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
-        matARange = (&castOp)->getInputs();
+        auto cast = (&castOp)->getInputs();
+        matARange = ValueRange(cast);
       }
     }
 
     if(auto *parentOp = matBValue.getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
-        matBRange = (&castOp)->getInputs();
+        auto cast = (&castOp)->getInputs();
+        matBRange = ValueRange(cast);
       }
     }
 
     if(auto *parentOp = matCValue.getDefiningOp()){
       if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
-        matCRange = (&castOp)->getInputs();
+        auto cast = (&castOp)->getInputs();
+        matCRange = ValueRange(cast);
       }
     }
 
-    // llvm::outs() << "\n\n[DotOpToXeGPUPattern] matARange[0]: "<<matARange[0]<<"\n";
-    // llvm::outs() << "\n\n[DotOpToXeGPUPattern] matBRange[0]: "<<matBRange[0]<<"\n";
+    llvm::outs() << "\n\n[DotOpToXeGPUPattern] matARange.size(): "<<matARange.size()<<"\n";
+    llvm::outs() << "\n\n[DotOpToXeGPUPattern] matARange[0]: "<<matARange[0]<<"\n";
+    llvm::outs() << "\n\n[DotOpToXeGPUPattern] matBRange.size(): "<<matBRange.size()<<"\n";
+    llvm::outs() << "\n\n[DotOpToXeGPUPattern] matBRange[0]: "<<matBRange[0]<<"\n";
 
     // Split matrix A
     auto matAType = matARange[0].getType().cast<VectorType>();
@@ -952,32 +1121,14 @@ public:
     auto elemType = aTensorType.getElementType();
     auto aEncoding = aTensorType.getEncoding().template cast<DotOperandEncodingAttr>().getParent();
     auto aLayout = llvm::dyn_cast<GenericEncodingAttr>(aEncoding);
+    auto aMmaFlag = aLayout.getMmaFlag();
     auto aThreadShape = aLayout.getThreadShape();
     auto aThreadStride = aLayout.getThreadStride();
     auto aElemShape = aLayout.getElemPerThread();
     auto aDpasM = aThreadShape[0] * aElemShape[0];
     auto aDpasK = aThreadShape[1] * aElemShape[1];
     auto aLoadSize = aDpasM * aDpasK;
-
-    if(elemType == bf16Type){
-      elemType = i16Type;
-    }
-
     auto aCombinedLoadNum = aLoadM / aDpasM;
-    auto aDpasType = VectorType::get({aDpasM, aLoadShape[1], aLoadShape[2]}, elemType);
-
-    auto newMatANum = matARange.size() * aCombinedLoadNum;
-    SmallVector<Value> spiltA(newMatANum);
-    SmallVector<int32_t, 2> aIndices(aLoadSize);
-    for(int i = 0; i < matARange.size(); i++){
-      for(int j = 0; j < aCombinedLoadNum; j++){
-        uint64_t offset = j * aLoadSize;
-        std::iota(aIndices.begin(), aIndices.end(), offset);
-        Value slice = rewriter.create<spirv::VectorShuffleOp>(loc, aDpasType, matARange[i], matARange[i], rewriter.getI32ArrayAttr(aIndices));
-        spiltA[j * 2 + i] = slice;
-      }
-    }
-    matARange = ValueRange{spiltA};
 
     // Split matrix B
     auto matBType = matBRange[0].getType().cast<VectorType>();
@@ -997,44 +1148,107 @@ public:
     auto bCombinedLoadNum = bLoadK / bDpasK;
     auto bDpasType = VectorType::get({bDpasK / 2, bLoadShape[1], bLoadShape[2]}, elemType);
 
-    auto newMatBNum = matBRange.size() * bCombinedLoadNum;
-    SmallVector<Value> spiltB(newMatBNum);
-    SmallVector<int32_t, 2> bIndices(bLoadSize);
-    for(int i = 0; i < matBRange.size(); i++){
-      for(int j = 0; j < bCombinedLoadNum; j++){
-        uint64_t offset = j * bLoadSize;
-        std::iota(bIndices.begin(), bIndices.end(), offset);
-        Value slice = rewriter.create<spirv::VectorShuffleOp>(loc, bDpasType, matBRange[i], matBRange[i], rewriter.getI32ArrayAttr(bIndices));
-        spiltB[j * 4 + i] = slice;
+
+    int M = aElemShape[2];
+    int N = bElemShape[3];
+    int K = aElemShape[3];
+
+    if(elemType == bf16Type){
+      elemType = i16Type;
+    }
+
+    auto aSize = matARange.size();
+    auto newMatANum = aSize * aCombinedLoadNum;
+    auto aBlockK = aElemShape[3];
+    auto aBlockM = aSize / aElemShape[3];
+
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern] aCombinedLoadNum: " << aCombinedLoadNum <<"\n";
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern] aLoadShape.size(): " << aLoadShape.size() <<"\n";
+
+    int matASize = aLoadShape.size() == 3 ? newMatANum : aSize;
+    SmallVector<Value> matAVec(matASize);
+
+    if(aLoadShape.size() == 3){
+      auto aDpasType = VectorType::get({aDpasM, aLoadShape[1], aLoadShape[2]}, elemType);
+      SmallVector<int32_t, 2> aIndices(aLoadSize);
+      for(int m = 0; m < aBlockM; m++){
+        for(int k = 0; k < aBlockK; k++){
+          for(int j = 0; j < aCombinedLoadNum; j++){
+            auto blockIdx = m * aBlockK + k;
+            uint64_t offset = j * aLoadSize;
+            std::iota(aIndices.begin(), aIndices.end(), offset);
+            Value slice = rewriter.create<spirv::VectorShuffleOp>(loc, aDpasType, matARange[blockIdx], matARange[blockIdx], rewriter.getI32ArrayAttr(aIndices));
+            matAVec[(m * aCombinedLoadNum + j) * aBlockK + k] = slice;
+          }
+        }
+      }
+    } else if(aLoadShape.size() == 2){
+      auto aDpasType = VectorType::get({aLoadShape[0], aLoadShape[1] / 2, 2}, elemType);
+      for(int i = 0;i<aSize;i++){
+        //Value A = rewriter.create<vector::ShapeCastOp>(loc, aDpasType, matARange[i]);
+        Value A = urcast(aDpasType, matARange[i])->getResults()[0];
+        matAVec[i] = A;
       }
     }
-    matBRange = ValueRange{spiltB};
+    matARange = ValueRange(matAVec);
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern] matARange[0]: " << matARange[0] <<"\n";
+
+    auto bSize = matBRange.size();
+    auto newMatBNum = matBRange.size() * bCombinedLoadNum;
+    auto bBlockN = bElemShape[3];
+    auto bBlockK = bSize / bElemShape[3];
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern]matBRange.size(): " << matBRange.size() <<"\n";
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern]bCombinedLoadNum: " << bCombinedLoadNum <<"\n";
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern]bBlockN: " << bBlockN <<"\n";
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern]bBlockK: " << bBlockK <<"\n";
+    SmallVector<Value> spiltB(newMatBNum);
+    SmallVector<int32_t, 2> bIndices(bLoadSize);
+    for(int k = 0; k < bBlockK; k++){
+      for(int n = 0; n < bBlockN; n++){
+        for(int j = 0; j < bCombinedLoadNum; j++){
+          auto blockIdx = k * bBlockN + n;
+          uint64_t offset = j * bLoadSize;
+          std::iota(bIndices.begin(), bIndices.end(), offset);
+          Value slice = rewriter.create<spirv::VectorShuffleOp>(loc, bDpasType, matBRange[blockIdx], matBRange[blockIdx], rewriter.getI32ArrayAttr(bIndices));
+          spiltB[(k * bCombinedLoadNum + j) * bBlockN + n] = slice;
+          // spiltB[j * matBRange.size() + i] = slice;
+        }
+      }
+    }
+    matBRange = ValueRange(spiltB);
 
     auto size = matARange.size();
-    SmallVector<Value> results(4*4);
+
+    llvm::outs() <<"\n\n[DotOpToXeGPUPattern]M: " << M 
+                                         <<" N: " << N
+                                         <<" K: " << K <<"\n";
+    SmallVector<Value> results(M * N);
 
     Type resultTy = matCRange[0].getType();
     Type resultStructTy = spirv::StructType::get(SmallVector<Type>(4*4, resultTy));
 
     //todo
-    for (int n = 0; n < 4; n++) {
-      for (int m = 0; m < 4; m++) {
-        auto matC = matCRange[m*4+n];
-        for (int k = 0; k < 2; k++) {
-          auto matA = matARange[m*2+k];
-          auto matB = matBRange[k*4+n];
+    for (int n = 0; n < N; n++) {
+      for (int m = 0; m < M; m++) {
+        auto matC = matCRange[m * N + n];
+        for (int k = 0; k < K; k++) {
+          // llvm::outs() <<"\n\n[DotOpToXeGPUPattern] k: " << k <<"\n";
+          auto matA = matARange[m * K + k];
+          // llvm::outs() <<"\n\n[DotOpToXeGPUPattern] matA: " << matA <<"\n";
+          auto matB = matBRange[k * N + n];
+          // llvm::outs() <<"\n\n[DotOpToXeGPUPattern] matB: " << matB <<"\n";
           matC = rewriter.create<xegpu::DpasOp>(loc, resultTy, matA, matB, matC);
         }
-        results[m*4+n] = matC;
+        results[m * N + n] = matC;
       }
     }
 
     instBrrier = rewriter.create<xegpu::CompilerHintOp>(loc);
 
-    mlir::ValueRange newResults{results};
+    mlir::ValueRange newResults(results);
     auto resultTys = op->getResultTypes();
     auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newResults)->getResults();
-    newResults = ValueRange{cast};
+    newResults = ValueRange(cast);
     rewriter.replaceOp(op, newResults);
     llvm::outs()<<"\n\n[DotOpToXeGPUPattern] end\n";
     return success();
@@ -1097,6 +1311,147 @@ public:
   }
 };
 
+class ExpandDimsOpToXeGPUPattern : public OpConversionPattern<triton::ExpandDimsOp> {
+public:
+  using OpConversionPattern<triton::ExpandDimsOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::ExpandDimsOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    llvm::outs()<<"\n\n[ExpandDimsOpToXeGPUPattern]\n";
+    auto context = rewriter.getContext();
+    Location loc = op->getLoc();
+    auto src = adaptor.getSrc();
+    auto type = src.getType();
+    auto vectorType = type.cast<mlir::VectorType>();
+    auto shape = vectorType.getShape();
+    auto elemType = vectorType.getElementType();
+
+    RankedTensorType tensorType = op.getResult().getType().cast<RankedTensorType>();
+    auto encoding = tensorType.getEncoding();
+    auto layout = encoding.cast<GenericEncodingAttr>();
+    auto mmaFlag = layout.getMmaFlag();
+    auto threadShape = layout.getThreadShape();
+    auto elemShape = layout.getElemPerThread();
+    auto elemStride = layout.getElemStride();
+
+    TritonGPUToXeGPUTypeConverter xeGPUTypeConverter(*context);
+    llvm::SmallVector<mlir::Type> resultTypes;
+
+    auto value = op.getResult();
+    auto result = xeGPUTypeConverter.convertType(value.getType(), resultTypes);
+    auto newType = resultTypes[0];
+    llvm::outs()<<"\n\n[ExpandDimsOpToXeGPUPattern]resultTypes.size(): " << resultTypes.size() << "\n";
+    llvm::outs()<<"\n\n[ExpandDimsOpToXeGPUPattern]newType: " << newType << "\n";
+
+    int blockM = elemShape[2];
+    int blockN = elemShape[3];
+    int vectorSize = shape[0] / elemShape[2];
+    SmallVector<Value> newValues;
+    for(int i = 0; i < blockM; i++){
+      Type curVecType = mlir::VectorType::get(vectorSize, elemType);
+      SmallVector<int32_t, 2> indices(vectorSize);
+      uint64_t offset = vectorSize * i;
+      std::iota(indices.begin(), indices.end(), offset);
+      Value slice = rewriter.create<spirv::VectorShuffleOp>(loc, curVecType, src, src, rewriter.getI32ArrayAttr(indices));
+
+      for(int j = 0; j < blockN; j++){
+        //Value ret = rewriter.create<vector::ShapeCastOp>(loc, newType, slice);
+        // Value ret = urcast(newType, slice)->getResults()[0];
+        //Value ret = rewriter.create<vector::BroadcastOp>(loc, newType, slice);
+        newValues.push_back(slice);
+      }
+    }
+    llvm::outs()<<"\n\n[ExpandDimsOpToXeGPUPattern]newValues.size(): " << newValues.size() << "\n";
+    llvm::outs()<<"\n\n[ExpandDimsOpToXeGPUPattern]newValues[0]: " << newValues[0] << "\n";
+
+    mlir::ValueRange newValueRange(newValues);
+    auto resultTys = op->getResultTypes();
+    auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newValueRange)->getResults();
+   
+    newValueRange = ValueRange(cast);
+    rewriter.replaceOp(op, newValueRange);
+    return success();
+  }
+};
+
+class BroadcastOpToXeGPUPattern : public OpConversionPattern<triton::BroadcastOp> {
+public:
+  using OpConversionPattern<triton::BroadcastOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::BroadcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    llvm::outs()<<"\n\n[BroadCastOpToXeGPUPattern]\n";
+    auto context = rewriter.getContext();
+    Location loc = op->getLoc();
+    ValueRange src(adaptor.getSrc());
+    llvm::outs()<<"\n\n[BroadCastOpToXeGPUPattern]src: "<<src[0]<<"\n";
+
+    if(auto *parentOp = src[0].getDefiningOp()){
+      if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
+        src = (&castOp)->getInputs();
+      }
+    }
+
+    TritonGPUToXeGPUTypeConverter xeGPUTypeConverter(*context);
+    llvm::SmallVector<mlir::Type> resultTypes;
+
+    auto value = op.getResult();
+    auto result = xeGPUTypeConverter.convertType(value.getType(), resultTypes);
+    auto newType = resultTypes[0];
+    auto shape = newType.cast<VectorType>().getShape();
+    int nElem = 1;
+    for(auto s : shape){
+      nElem *= s;
+    }
+
+    auto srcType = src[0].getType();
+    ArrayRef<int64_t> srcShape{1};
+    bool isVevtorSrc = 0;
+    Type castType;
+    if(isa<VectorType>(srcType)){
+      isVevtorSrc = 1;
+      srcShape = srcType.cast<VectorType>().getShape();
+      Type elemType = srcType.cast<VectorType>().getElementType();
+      castType = VectorType::get(srcShape[0], elemType);
+    }
+
+    SmallVector<Value> newValues;
+    for(int i = 0; i < resultTypes.size();i++){
+      Value in = src[i];
+      Value ret;
+      if(isVevtorSrc && (srcShape.size() > 1)){
+        // in = rewriter.create<vector::ShapeCastOp>(loc, castType, in);
+        ret = rewriter.create<spirv::UndefOp>(loc, newType);
+
+        SmallVector<int32_t> indices(nElem, 0);
+        for(int d0=0;d0<shape[0];d0++){
+          for(int d1=0;d1<shape[1];d1++){
+            indices[d0*shape[1]+d1] = d0;
+          }
+        }
+        llvm::outs()<<"\n\n[SplatOpToXeGPUPattern]indices.size(): "<<indices.size()<<"\n";
+        ret = rewriter.create<spirv::VectorShuffleOp>(
+              loc, newType, in, in, rewriter.getI32ArrayAttr(indices));
+      } else{
+        ret = rewriter.create<vector::BroadcastOp>(loc, newType, in);
+      }
+
+      newValues.push_back(ret);
+    }
+
+    llvm::outs()<<"\n\n[BroadCastOpToXeGPUPattern]newValues.size(): " << newValues.size() << "\n";
+    llvm::outs()<<"\n\n[BroadCastOpToXeGPUPattern]newValues[0]: " << newValues[0] << "\n";
+
+    mlir::ValueRange newValueRange(newValues);
+    auto resultTys = op->getResultTypes();
+    auto cast = rewriter.create<mlir::UnrealizedConversionCastOp>(loc, resultTys, newValueRange)->getResults();
+    newValueRange = ValueRange(cast);
+    rewriter.replaceOp(op, newValueRange);
+
+    return success();
+  }
+};
+
 void populateTritonGPUToXeGPUPatterns(
     TritonGPUToXeGPUTypeConverter &typeConverter, RewritePatternSet &patterns) {
   llvm::outs()<<"\n\npopulateXeGPUToVCIntrinsicsPatterns\n";
@@ -1106,7 +1461,8 @@ void populateTritonGPUToXeGPUPatterns(
                CmpIOpToXeGPUPattern, SplatOpToXeGPUPattern,
                GetProgramIdOpToXeGPUPattern, ReturnOpToXeGPUPattern,
                ConvertLayoutOpToXeGPUPattern, MakeTensorPtrOpToXeGPUPattern,
-               DotOpToXeGPUPattern, AdvanceOpToXeGPUPattern>(
+               DotOpToXeGPUPattern, AdvanceOpToXeGPUPattern,
+               ExpandDimsOpToXeGPUPattern, BroadcastOpToXeGPUPattern>(
       typeConverter, context);
 
   //process arith op

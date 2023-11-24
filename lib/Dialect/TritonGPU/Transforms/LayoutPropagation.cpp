@@ -140,11 +140,25 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
           type = type.cast<triton::PointerType>().getPointeeType();
           isPointerType = 1;
         }
-        //llvm::outs() << "\n\n[propagateLayout]after convert pointType : "<<type<<"\n";
+
         if(type.isa<mlir::RankedTensorType>()){
           auto tensorType = type.cast<RankedTensorType>();
           auto layout = tensorType.getEncoding();
-          if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
+          if(isa<DotOperandEncodingAttr>(layout)){
+            llvm::outs()<<"\n\n[LayoutPropagation]op: " << *op <<"\n";
+            llvm::outs()<<"\n\n[LayoutPropagation]layout: " << layout <<"\n";
+            auto opIdx = layout.cast<DotOperandEncodingAttr>().getOpIdx();
+            auto newEncoding = DotOperandEncodingAttr::get(context, opIdx, encoding, 0);
+            auto newType = RankedTensorType::get(tensorType.getShape(), 
+                    tensorType.getElementType(), newEncoding);
+            if(isPointerType){
+              auto pointerType = triton::PointerType::get(newType, addr);
+              operand.setType(pointerType);
+            } else {
+              operand.setType(newType);
+            }
+          }
+          else if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
             if(genericLayout.getMmaFlag() == -1){
               auto newType = RankedTensorType::get(tensorType.getShape(), 
                     tensorType.getElementType(), encoding);
@@ -155,6 +169,8 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
                 operand.setType(newType);
               }
             }
+          }else{
+
           }
         }
       }
@@ -173,7 +189,21 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
         if(type.isa<mlir::RankedTensorType>()){
           auto tensorType = type.cast<RankedTensorType>();
           auto layout = tensorType.getEncoding();
-          if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
+          if(isa<DotOperandEncodingAttr>(layout)){
+            llvm::outs()<<"\n\n[LayoutPropagation]op: " << *op <<"\n";
+            llvm::outs()<<"\n\n[LayoutPropagation]layout: " << layout <<"\n";
+            auto opIdx = layout.cast<DotOperandEncodingAttr>().getOpIdx();
+            auto newEncoding = DotOperandEncodingAttr::get(context, opIdx, encoding, 0);
+            auto newType = RankedTensorType::get(tensorType.getShape(), 
+                    tensorType.getElementType(), newEncoding);
+            if(isPointerType){
+              auto pointerType = triton::PointerType::get(newType, addr);
+              result.setType(pointerType);
+            } else {
+              result.setType(newType);
+            }
+          }
+          else if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
             if(genericLayout.getMmaFlag() == -1){
               auto newType = RankedTensorType::get(tensorType.getShape(), 
                     tensorType.getElementType(), encoding);
@@ -185,11 +215,12 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
               }
             }
           }
+          else{
+
+          }
         }
       }
     }
-
-    //llvm::outs() << "\n\n[propagateLayout]after update layout: "<<*op<<"\n";
 
     for(auto preOp : preOpsGraph[op]){
       if(opsSet.count(preOp) == 1){
@@ -198,7 +229,12 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
     }
     for(auto sucOp : sucOpsGraph[op]){
       if(opsSet.count(sucOp) == 1){
-        opsQueue.push(sucOp);
+        //Handling multiple dotOp
+        if(auto dotOp = dyn_cast<triton::DotOp>(sucOp)){
+
+        }else{
+          opsQueue.push(sucOp);
+        }
       }
     }
   }
@@ -207,9 +243,18 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
 void setDotOpLayout(MLIRContext *context, Operation *curr){
   if (auto dotOp = dyn_cast<triton::DotOp>(curr)) {
     //Need to be inferred from hardware info
-    const std::vector<unsigned int> aThreadShapeVec{2, 8, 8, 4};
-    const std::vector<unsigned int> aThreadStrideVec{1, 2, 32, 0};
-    const std::vector<unsigned int> aElemPerThreadVec{4, 2, 4, 2};
+    // dotOp
+    // const std::vector<unsigned int> aThreadShapeVec{2, 8, 8, 4};
+    // const std::vector<unsigned int> aThreadStrideVec{1, 2, 32, 0};
+    // const std::vector<unsigned int> aElemPerThreadVec{4, 2, 4, 2};
+    // const std::vector<unsigned int> aElemStrideVec{2, 1, 8, 16};
+    // const std::vector<unsigned int> aSubGroupShapeVec{4, 4};
+    // const std::vector<unsigned int> aOrderVec{1, 0, 1, 0};
+
+    //attention
+    const std::vector<unsigned int> aThreadShapeVec{2, 8, 8, 2};
+    const std::vector<unsigned int> aThreadStrideVec{1, 2, 16, 0};
+    const std::vector<unsigned int> aElemPerThreadVec{4, 2, 2, 4};
     const std::vector<unsigned int> aElemStrideVec{2, 1, 8, 16};
     const std::vector<unsigned int> aSubGroupShapeVec{4, 4};
     const std::vector<unsigned int> aOrderVec{1, 0, 1, 0};
@@ -230,12 +275,22 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
     llvm::outs()<<"\n\n[DotOp]matA newType: "<<newType<<"\n";
     A.setType(newType);
 
-    const std::vector<unsigned int> bThreadShapeVec{1, 16, 8, 4};
+    // dotOp
+    // const std::vector<unsigned int> bThreadShapeVec{1, 16, 8, 4};
+    // const std::vector<unsigned int> bThreadStrideVec{0, 1, 0, 64};
+    // const std::vector<unsigned int> bElemPerThreadVec{16, 1, 2, 4};
+    // const std::vector<unsigned int> bElemStrideVec{1, 0, 16, 16};
+    // const std::vector<unsigned int> bSubGroupShapeVec{4, 4};
+    // const std::vector<unsigned int> bOrderVec{1, 0, 1, 0};
+
+    //fused attention
+    const std::vector<unsigned int> bThreadShapeVec{1, 16, 8, 1};
     const std::vector<unsigned int> bThreadStrideVec{0, 1, 0, 64};
-    const std::vector<unsigned int> bElemPerThreadVec{16, 1, 2, 4};
+    const std::vector<unsigned int> bElemPerThreadVec{16, 1, 4, 4};
     const std::vector<unsigned int> bElemStrideVec{1, 0, 16, 16};
     const std::vector<unsigned int> bSubGroupShapeVec{4, 4};
     const std::vector<unsigned int> bOrderVec{1, 0, 1, 0};
+
     ArrayRef<unsigned int> bThreadShape(bThreadShapeVec);
     ArrayRef<unsigned int> bThreadstride(bThreadStrideVec);
     ArrayRef<unsigned int> bElemPerThread(bElemPerThreadVec);
@@ -253,9 +308,18 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
     llvm::outs()<<"\n\n[DotOp]matB newType: "<<newType<<"\n";
     B.setType(newType);
 
-    const std::vector<unsigned int> cThreadShapeVec{1, 16, 8, 4};
-    const std::vector<unsigned int> cThreadStrideVec{0, 1, 32, 64};
-    const std::vector<unsigned int> cElemPerThreadVec{8, 1, 4, 4};
+    //dot
+    // const std::vector<unsigned int> cThreadShapeVec{1, 16, 8, 4};
+    // const std::vector<unsigned int> cThreadStrideVec{0, 1, 32, 64};
+    // const std::vector<unsigned int> cElemPerThreadVec{8, 1, 4, 4};
+    // const std::vector<unsigned int> cElemStrideVec{1, 0, 8, 16};
+    // const std::vector<unsigned int> cSubGroupShapeVec{4, 4};
+    // const std::vector<unsigned int> cOrderVec{1, 0, 1, 0};
+
+    //attention
+    const std::vector<unsigned int> cThreadShapeVec{1, 16, 8, 1};
+    const std::vector<unsigned int> cThreadStrideVec{0, 1, 16, 64};
+    const std::vector<unsigned int> cElemPerThreadVec{8, 1, 2, 4};
     const std::vector<unsigned int> cElemStrideVec{1, 0, 8, 16};
     const std::vector<unsigned int> cSubGroupShapeVec{4, 4};
     const std::vector<unsigned int> cOrderVec{1, 0, 1, 0};
@@ -333,41 +397,45 @@ public:
     // propagate Layout, start from DotOp
     op->walk([&](Operation *curr) {
       if (auto dotOp = dyn_cast<triton::DotOp>(curr)){
-        opsSet.erase(dotOp);
-        auto matA = dotOp.getA();
-        auto matB = dotOp.getB();
-        auto matC = dotOp.getC();
+        llvm::outs()<<"\n\n[LayoutPropagation] dotOp in module: "<<dotOp<<"\n";
+        llvm::outs()<<"\n\n[LayoutPropagation] opsSet.count(dotOp): "<<opsSet.count(dotOp)<<"\n";
+        if(opsSet.count(dotOp) == 1){
+          opsSet.erase(dotOp);
+          auto matA = dotOp.getA();
+          auto matB = dotOp.getB();
+          auto matC = dotOp.getC();
 
-        auto aEncoding = matA.getType().dyn_cast<RankedTensorType>().getEncoding();
-        auto bEncoding = matB.getType().dyn_cast<RankedTensorType>().getEncoding();
-        auto cEncoding = matC.getType().dyn_cast<RankedTensorType>().getEncoding();
+          auto aEncoding = matA.getType().dyn_cast<RankedTensorType>().getEncoding();
+          auto bEncoding = matB.getType().dyn_cast<RankedTensorType>().getEncoding();
+          auto cEncoding = matC.getType().dyn_cast<RankedTensorType>().getEncoding();
 
-        aEncoding = aEncoding.dyn_cast<DotOperandEncodingAttr>()
-                                      .getParent().cast<GenericEncodingAttr>();
-        bEncoding = bEncoding.dyn_cast<DotOperandEncodingAttr>()
-                                      .getParent().cast<GenericEncodingAttr>();
+          aEncoding = aEncoding.dyn_cast<DotOperandEncodingAttr>()
+                                        .getParent().cast<GenericEncodingAttr>();
+          bEncoding = bEncoding.dyn_cast<DotOperandEncodingAttr>()
+                                        .getParent().cast<GenericEncodingAttr>();
 
-        llvm::outs() << "\n\naEncoding: " << aEncoding << "\n";
-        llvm::outs() << "\n\nbEncoding: " << bEncoding << "\n";
-        opsQueueTy aRelatedOpsQueue, bRelatedOpsQueue, cRelatedOpsQueue;
+          llvm::outs() << "\n\naEncoding: " << aEncoding << "\n";
+          llvm::outs() << "\n\nbEncoding: " << bEncoding << "\n";
+          opsQueueTy aRelatedOpsQueue, bRelatedOpsQueue, cRelatedOpsQueue;
 
-        for(auto preOp : preOpsGraph[dotOp]){
-          if(preOp->getResult(0) == matA){
-            aRelatedOpsQueue.push(preOp);
-          } else if(preOp->getResult(0) == matB){
-            bRelatedOpsQueue.push(preOp);
-          } else{
-            cRelatedOpsQueue.push(preOp);
+          for(auto preOp : preOpsGraph[dotOp]){
+            if(preOp->getResult(0) == matA){
+              aRelatedOpsQueue.push(preOp);
+            } else if(preOp->getResult(0) == matB){
+              bRelatedOpsQueue.push(preOp);
+            } else{
+              cRelatedOpsQueue.push(preOp);
+            }
           }
-        }
 
-        for(auto sucOp : sucOpsGraph[dotOp]){
-          cRelatedOpsQueue.push(sucOp);
-        }
+          for(auto sucOp : sucOpsGraph[dotOp]){
+            cRelatedOpsQueue.push(sucOp);
+          }
 
-        propagateLayout(context, aRelatedOpsQueue, aEncoding, preOpsGraph, sucOpsGraph, opsSet);
-        propagateLayout(context, bRelatedOpsQueue, bEncoding, preOpsGraph, sucOpsGraph, opsSet);
-        propagateLayout(context, cRelatedOpsQueue, cEncoding, preOpsGraph, sucOpsGraph, opsSet);
+          propagateLayout(context, aRelatedOpsQueue, aEncoding, preOpsGraph, sucOpsGraph, opsSet);
+          propagateLayout(context, bRelatedOpsQueue, bEncoding, preOpsGraph, sucOpsGraph, opsSet);
+          propagateLayout(context, cRelatedOpsQueue, cEncoding, preOpsGraph, sucOpsGraph, opsSet);
+        }
       }
     });
 

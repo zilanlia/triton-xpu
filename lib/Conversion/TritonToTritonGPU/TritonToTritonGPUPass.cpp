@@ -200,8 +200,8 @@ struct TritonExpandDimsPattern
     if (!_argEncoding)
       return failure();
   
-    auto argEncoding = _argEncoding.cast<triton::gpu::GenericEncodingAttr>();
-    triton::gpu::GenericEncodingAttr retEncoding = argEncoding;
+    auto argEncoding = _argEncoding.cast<GenericEncodingAttr>();
+    GenericEncodingAttr retEncoding = argEncoding;
     // auto argEncoding = _argEncoding.cast<triton::gpu::BlockedEncodingAttr>();
     // // return shape
     // auto retShape = argType.getShape().vec();
@@ -229,16 +229,29 @@ struct TritonExpandDimsPattern
     //                                           retThreadsPerWarp, retWarpsPerCTA,
     //                                           retOrder, retCTALayout);
     // convert operand to slice of return type
-    Attribute newArgEncoding = triton::gpu::SliceEncodingAttr::get(
-        getContext(), op.getAxis(), retEncoding);
-    RankedTensorType newArgType = RankedTensorType::get(
-        argType.getShape(), argType.getElementType(), newArgEncoding);
-    // construct new op
-    auto newSrc = rewriter.create<triton::gpu::ConvertLayoutOp>(
-        op.getLoc(), newArgType, adaptor.getSrc());
-    addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
-                      op, newSrc, adaptor.getAxis()),
-                  adaptor.getAttributes());
+    // Attribute newArgEncoding = triton::gpu::SliceEncodingAttr::get(
+    //     getContext(), op.getAxis(), retEncoding);
+    // RankedTensorType newArgType = RankedTensorType::get(
+    //     argType.getShape(), argType.getElementType(), newArgEncoding);
+    // // construct new op
+    // auto newSrc = rewriter.create<triton::gpu::ConvertLayoutOp>(
+    //     op.getLoc(), newArgType, adaptor.getSrc());
+    // addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
+    //                   op, newSrc, adaptor.getAxis()),
+    //               adaptor.getAttributes());
+    RankedTensorType retType = op.getResult().getType().cast<RankedTensorType>();
+    auto shape = retType.getShape();
+    auto elementType = retType.getElementType();
+    Value src = adaptor.getSrc();
+    auto encoding = src.getType().cast<RankedTensorType>().getEncoding();
+    Type newRetType = RankedTensorType::get(shape, elementType, encoding); 
+    Location loc = op.getLoc();
+    // llvm::outs() << "\n\n[TritonExpandDimsPattern] src: " << src <<"\n";
+    // llvm::outs() << "\n\n[TritonExpandDimsPattern] adaptor.getAxis(): " << adaptor.getAxis() <<"\n";
+    triton::ExpandDimsOp expandDimsOp = rewriter.create<triton::ExpandDimsOp>(loc, newRetType, src, adaptor.getAxis());
+    // llvm::outs() << "\n\n[TritonExpandDimsPattern] expandDimsOp: " << expandDimsOp <<"\n";
+    addNamedAttrs(expandDimsOp, adaptor.getAttributes());
+    rewriter.replaceOp(op, expandDimsOp.getResult());
     return success();
   }
 

@@ -158,31 +158,57 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
     auto genericLayout = llvm::dyn_cast<GenericEncodingAttr>(layout);
     Type elemTy = type.getElementType();
     auto MmaFlag = genericLayout.getMmaFlag();
+    auto threadShape = genericLayout.getThreadShape();
+    auto threadStride = genericLayout.getThreadStride();
+    auto elemShape = genericLayout.getElemPerThread();
+    auto elemStride = genericLayout.getElemStride();
 
     if(elemTy.isa<triton::PointerType>()){
       elemTy = elemTy.cast<triton::PointerType>().getPointeeType();
-      std::vector<int64_t> storeShape{32};
-      auto newType = ::mlir::triton::xegpu::TensorDescType::get(context, storeShape, elemTy, 
-                                              ScatteredAttr::get(context));
+      Type newType;
+      if(MmaFlag==-1){
+        std::vector<int64_t> size{threadShape[0]};
+        newType = ::mlir::triton::xegpu::TensorDescType::get(context, size, elemTy, 
+                                                ScatteredAttr::get(context));
+      } else if(MmaFlag==2) { // dots related
+        std::vector<int64_t> size{threadStride[2]};
+        newType = ::mlir::triton::xegpu::TensorDescType::get(context, size, elemTy, 
+                                                ScatteredAttr::get(context));
+      } else{
+        
+      }
       resultTypes.assign(1, newType);
       return success();
     }
 
-    auto threadShape = genericLayout.getThreadShape();
-    if(MmaFlag==2){
-      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16}, elemTy);
-      resultTypes.assign(16, newType);
-    }
-    else if(MmaFlag==0){
-      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy);
-      resultTypes.assign(8, newType);
-    } else if(MmaFlag==1 && elemTy == f16Type){
-      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy);
-      resultTypes.assign(8, newType);
-    } else if(MmaFlag==1 && elemTy == bf16Type){
-      auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, i16Type);
-      resultTypes.assign(8, newType);
-    } else{
+    if(MmaFlag != -1){
+      if(MmaFlag==2 && shape.size()==1){
+        auto newType = mlir::VectorType::get(threadStride[2], elemTy);
+        resultTypes.assign(1, newType);
+        return success();
+      }
+      
+      int dim0 = elemStride[2] < shape[0] ? elemStride[2] : shape[0];
+      int dim1 = elemStride[3] < shape[1] ? elemStride[3] : shape[1];
+      // llvm::outs()<<"\n\n[convertTritonTensorType] dim0: "<<dim0<<"\n";
+      // llvm::outs()<<"\n\n[convertTritonTensorType] dim0: "<<dim1<<"\n";
+      
+      if(MmaFlag==2){
+        auto newType = mlir::VectorType::get(ArrayRef<int64_t>{dim0, dim1}, elemTy);
+        int size = elemShape[2] * elemShape[3];
+        resultTypes.assign(size, newType);
+      }
+      else if(MmaFlag==0){
+        auto newType = mlir::VectorType::get(ArrayRef<int64_t>{dim0, dim1 / 2, 2}, elemTy);
+        resultTypes.assign(elemShape[2] * elemShape[3], newType);
+      } else if(MmaFlag==1 && elemTy == f16Type){
+        auto newType = mlir::VectorType::get(ArrayRef<int64_t>{dim0 / 2, dim1, 2}, elemTy);
+        resultTypes.assign(elemShape[2] * elemShape[3], newType);
+      } else if(MmaFlag==1 && elemTy == bf16Type){
+        auto newType = mlir::VectorType::get(ArrayRef<int64_t>{dim0 / 2, dim1, 2}, i16Type);
+        resultTypes.assign(elemShape[2] * elemShape[3], newType);
+      } 
+    }else{
       unsigned simd = product_interval<unsigned>(threadShape, 0, threadShape.size() / 2);
       auto newType = mlir::VectorType::get(simd, elemTy);
       resultTypes.assign(1, newType);
@@ -192,14 +218,15 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
     if (dotOpLayout.getParent().isa<GenericEncodingAttr>()) { // for parent is generic layout
       auto genericLayout = llvm::dyn_cast<GenericEncodingAttr>(dotOpLayout.getParent());
       auto MmaFlag = genericLayout.getMmaFlag();
+      auto elemShape = genericLayout.getElemPerThread();
       Type elemTy = type.getElementType();
 
       if(MmaFlag == 0){
         auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 8, 2}, elemTy);
-        resultTypes.assign(16, newType);
+        resultTypes.assign(elemShape[2] * elemShape[3], newType);
       } else if(MmaFlag == 1){
         auto newType = mlir::VectorType::get(ArrayRef<int64_t>{8, 16, 2}, elemTy);
-        resultTypes.assign(8, newType);
+        resultTypes.assign(elemShape[2] * elemShape[3], newType);
       } 
     }
   } else{
