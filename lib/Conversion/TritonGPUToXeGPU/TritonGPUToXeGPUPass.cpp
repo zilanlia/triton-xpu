@@ -205,6 +205,14 @@ public:
       }
       return true;
     });
+
+    addDynamicallyLegalOp<triton::ExternElementwiseOp>([](triton::ExternElementwiseOp op) -> bool {
+      auto result = op.getResult();
+      Type retType = result.getType();
+      if(isa<VectorType>(retType))
+        return true;
+      return false;
+    });
   }
 };
 

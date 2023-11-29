@@ -81,6 +81,7 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
                        Variadic<I32>: $offsets,
                        Variadic<I32>: $shape,
                        Variadic<I32>: $strides,
+                       DenseI32ArrayAttr: $order,
                        DenseI64ArrayAttr: $static_offsets,
                        DefaultValuedAttr<XeGPU_MemoryScopeAttr, "xegpu::MemoryScope::GLOBAL">: $memory_scope,
                        DefaultValuedAttr<BoolAttr, "true">: $boundary_check
@@ -94,20 +95,22 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
 
   let builders = [ 
     OpBuilder<(ins "::mlir::Type": $TensorDesc, "::mlir::Value": $source, "::mlir::ValueRange": $offsets, 
-                   "::mlir::ValueRange": $shape, "::mlir::ValueRange": $strides, "::llvm::ArrayRef<int64_t>": $static_offsets, 
+                   "::mlir::ValueRange": $shape, "::mlir::ValueRange": $strides, "::llvm::ArrayRef<int32_t>": $order, 
+                   "::llvm::ArrayRef<int64_t>": $static_offsets,
                    CArg<"::mlir::triton::xegpu::MemoryScope", "xegpu::MemoryScope::GLOBAL">: $memory_scope, 
                    CArg<"bool", "true">: $boundary_check),
     [{  $_state.addOperands(source);
         $_state.addOperands(offsets);
         $_state.addOperands(shape);
         $_state.addOperands(strides);
+        $_state.addAttribute(getOrderAttrName($_state.name), $_builder.getDenseI32ArrayAttr(order));
         $_state.addAttribute(getOperandSegmentSizesAttrName($_state.name), $_builder.getDenseI32ArrayAttr({1, static_cast<int32_t>(offsets.size()), static_cast<int32_t>(shape.size()), static_cast<int32_t>(strides.size())}));
         $_state.addAttribute(getStaticOffsetsAttrName($_state.name), $_builder.getDenseI64ArrayAttr(static_offsets));
         $_state.addAttribute(getMemoryScopeAttrName($_state.name), ::triton::xegpu::MemoryScopeAttr::get($_builder.getContext(), memory_scope));
         $_state.addAttribute(getBoundaryCheckAttrName($_state.name), $_builder.getBoolAttr(boundary_check));
         $_state.addTypes(TensorDesc); }]>,
       
-    OpBuilder<(ins "::mlir::Type": $tdesc, "::mlir::Value": $source, "::llvm::ArrayRef<mlir::OpFoldResult>": $offsets, 
+    OpBuilder<(ins "::mlir::Type": $tdesc, "::mlir::Value": $source, "::llvm::ArrayRef<mlir::OpFoldResult>": $offsets, "::llvm::ArrayRef<int32_t>": $order, 
                   CArg<"::mlir::triton::xegpu::MemoryScope", "::mlir::triton::xegpu::MemoryScope::GLOBAL">:$memory_scope, 
                   CArg<"bool", "true">:$boundary_check),
     [{  //assert(offsets.size() == getRankOf(source));
@@ -118,13 +121,14 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
         build($_builder, $_state, tdesc, source, dynamicOffsets         /* empty dynamic offsets */,
                                              ::mlir::ValueRange({})     /* empty dynamic shape   */,
                                              ::mlir::ValueRange({})     /* empty dynamic strides */,
+                                             order                      /* order */,
                                              staticOffsets              /* static offsets        */,
                                              memory_scope,
                                              boundary_check); }]>,
 
 
     OpBuilder<(ins "::mlir::Type": $tdesc, "::mlir::Value": $source, "::llvm::ArrayRef<mlir::OpFoldResult>": $offsets, 
-                   "::mlir::ValueRange": $shape, "::mlir::ValueRange": $stride,
+                   "::mlir::ValueRange": $shape, "::mlir::ValueRange": $stride, "::llvm::ArrayRef<int32_t>": $order,
                    CArg<"::mlir::triton::xegpu::MemoryScope", "xegpu::MemoryScope::GLOBAL">:$memory_scope, 
                    CArg<"bool", "true">:$boundary_check),
     [{  assert((!isMemRef(source) || getRankOf(source) == offsets.size()) && shape.size() == stride.size() && 
@@ -138,6 +142,7 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
         build($_builder, $_state, tdesc, source, dynamicOffsets /* empty dynamic offsets */,
                                              shape              /* empty dynamic shape   */,
                                              stride             /* empty dynamic strides */,
+                                             order              /* order */,
                                              staticOffsets      /* static offsets        */,
                                              memory_scope,
                                              boundary_check); }]>
@@ -180,7 +185,6 @@ def XeGPU_CreateNdDescOp : XeGPU_Op<"create_nd_tdesc", [Pure, AttrSizedOperandSe
 
     size_t getStridesRank() {
       return hasDynamicStrides() ? getStrides().size(): getRankOf(getSource());
-
     };
 
     /// Returns the type of the source memref operand.

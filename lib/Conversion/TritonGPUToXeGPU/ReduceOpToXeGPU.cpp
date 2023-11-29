@@ -51,7 +51,7 @@ private:
     if (isa<arith::AddIOp>(reduceOp))
       acc = add(acc, cur);
     else if (isa<arith::AddFOp>(reduceOp))
-      acc = rewriter.create<arith::AddFOp>(loc, acc.getType(), acc, cur);
+      acc = fadd(acc, cur);
     else if (isa<arith::MinSIOp>(reduceOp))
       acc = smin(acc, cur);
     else if (isa<arith::MaxSIOp>(reduceOp))
@@ -63,7 +63,7 @@ private:
     else if (isa<arith::MinFOp>(reduceOp))
       acc = fmin(acc, cur);
     else if (isa<arith::MaxFOp>(reduceOp))
-      acc = rewriter.create<arith::MaxFOp>(loc, acc.getType(), acc, cur);
+      acc = fmax(acc, cur);
     else if (isa<arith::XOrIOp>(reduceOp))
       acc = xor_(acc, cur);
     else
@@ -139,7 +139,7 @@ private:
     SmallVector<mlir::OpFoldResult> NdOffset{tmp};
 
     xegpu::CreateNdDescOp descOp = rewriter.create<xegpu::CreateNdDescOp>(loc, tensorDescType, slmStoreAddr,
-                NdOffset, triton::xegpu::MemoryScope::SLM, true);
+                NdOffset, ArrayRef<int>{1, 0}, triton::xegpu::MemoryScope::SLM, true);
 
     Value desc = descOp.getODSResults(0)[0];
     rewriter.create<xegpu::StoreNDOp>(loc, desc, acc, storeL1Hint, storeL2Hint, storeL3Hint);
@@ -288,17 +288,17 @@ private:
     // reduce within different blocks
     for(int i = 0; i < accNums; i++){
       acc[i] = src[i * accBlockNums];
-      curVecType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], shape[1], 1}, elemType);
-      acc[i] = rewriter.create<vector::ShapeCastOp>(loc, curVecType, acc[i]);
+      //curVecType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], shape[1], 1}, elemType);
+      //acc[i] = rewriter.create<vector::ShapeCastOp>(loc, curVecType, acc[i]);
 
       for(int j = 1; j < accBlockNums; j++){
         cur = src[i * accBlockNums + j];
-        cur = rewriter.create<vector::ShapeCastOp>(loc, curVecType, cur);
+        //cur = rewriter.create<vector::ShapeCastOp>(loc, curVecType, cur);
         accumulate(rewriter, loc, reduceOp, acc[i], cur);
       }
 
       for (unsigned N = accLens / 2; N > 0; N >>= 1) {
-        curVecType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], N, 1}, elemType);
+        curVecType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], N}, elemType);
 
         SmallVector<int32_t, 2> indices(shape[0] * N);
         for(int d0 = 0;d0 < shape[0];d0++){

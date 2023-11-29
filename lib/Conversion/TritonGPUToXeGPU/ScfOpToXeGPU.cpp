@@ -33,7 +33,6 @@ public:
   LogicalResult
   matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::outs()<<"\n\n[ForOpToXeGPUPattern] Start\n";
     auto loc = op.getLoc();
     auto context = op.getContext();
 
@@ -41,8 +40,16 @@ public:
     for (Value values: adaptor.getInitArgs()){
       if(auto *parentOp = values.getDefiningOp()){
         if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
-          ValueRange tmp = (&castOp)->getInputs();
-          convertedArgs.append(tmp.begin(), tmp.end());
+          ValueRange args = (&castOp)->getInputs();
+          for(auto arg : args){
+            auto argOp = arg.getDefiningOp();
+            if(auto argCastOp = dyn_cast<UnrealizedConversionCastOp>(argOp)){
+              Value originaArg = (&argCastOp)->getInputs()[0];
+              convertedArgs.push_back(originaArg);
+            }else{
+              convertedArgs.push_back(arg);
+            }
+          }
         }else{
           convertedArgs.push_back(values);
         }
@@ -110,19 +117,21 @@ public:
   LogicalResult
   matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    //llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] Start\n";
+    llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] Start\n";
     llvm::SmallVector<mlir::Value> convertedResults;
     for (Value values: adaptor.getResults()){
       if(auto *parentOp = values.getDefiningOp()){
         if(auto castOp = dyn_cast<UnrealizedConversionCastOp>(parentOp)){
-          auto src = (&castOp)->getInputs();
-          ValueRange range{src};
-          SmallVector<Value> vec;
-          for(int i = 0; i < range.size(); i++){
-            vec.push_back(range[i]);
+          ValueRange args = (&castOp)->getInputs();
+          for(auto arg : args){
+            auto argOp = arg.getDefiningOp();
+            if(auto argCastOp = dyn_cast<UnrealizedConversionCastOp>(argOp)){
+              Value originaArg = (&argCastOp)->getInputs()[0];
+              convertedResults.push_back(originaArg);
+            }else{
+              convertedResults.push_back(arg);
+            }
           }
-
-          convertedResults.append(vec.begin(), vec.end());
         }else{
           convertedResults.push_back(values);
         }

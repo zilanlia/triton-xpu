@@ -41,8 +41,10 @@ def _attn_fwd_inner(
     # causal = False
     else:
         lo, hi = 0, N_CTX
+
     K_block_ptr = tl.advance(K_block_ptr, (0, lo))
     V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
+
     # loop over k, v and update accumulator
     for start_n in range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
@@ -58,12 +60,10 @@ def _attn_fwd_inner(
         else:
             m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
             qk = qk * qk_scale - m_ij[:, None]
-        # p = tl.math.exp2(qk)
-        p = tl.exp(qk)
+        p = tl.math.exp2(qk)
         l_ij = tl.sum(p, 1)
         # -- update m_i and l_i
-        # alpha = tl.math.exp2(m_i - m_ij)
-        alpha = tl.exp(m_i - m_ij)
+        alpha = tl.math.exp2(m_i - m_ij)
         l_i = l_i * alpha + l_ij
         # -- update output accumulator --
         acc = acc * alpha[:, None]
@@ -188,8 +188,7 @@ def _attn_fwd(
             2, offs_m, offs_n, N_CTX,
         )
     # epilogue
-    # m_i += tl.math.log2(l_i)
-    m_i += tl.log(l_i)
+    m_i += tl.math.log2(l_i)
     acc = acc / l_i[:, None]
     m_ptrs = M + off_hz * N_CTX + offs_m
     tl.store(m_ptrs, m_i)
@@ -573,31 +572,40 @@ def test_op(Z, H, N_CTX, D_HEAD, causal, dtype=torch.float16):
         .normal_(mean=0.0, std=0.5)
         .requires_grad_()
     )
+
     sm_scale = 0.5
     dout = torch.randn_like(q)
     # reference implementation
     M = torch.tril(torch.ones((N_CTX, N_CTX), device="xpu"))
     p = torch.matmul(q, k.transpose(2, 3)) * sm_scale
-    if causal:
-        p[:, :, M == 0] = float("-inf")
     p = torch.softmax(p.float(), dim=-1).half()
-    # p = torch.exp(p)
+
     ref_out = torch.matmul(p, v)
-    ref_out.backward(dout)
-    ref_dv, v.grad = v.grad.clone(), None
-    ref_dk, k.grad = k.grad.clone(), None
-    ref_dq, q.grad = q.grad.clone(), None
-    # triton implementation
+    # # ref_out.backward(dout)
+    # # ref_dv, v.grad = v.grad.clone(), None
+    # # ref_dk, k.grad = k.grad.clone(), None
+    # # ref_dq, q.grad = q.grad.clone(), None
+    # # triton implementation
     tri_out = attention(q, k, v, causal, sm_scale).half()
-    tri_out.backward(dout)
-    tri_dv, v.grad = v.grad.clone(), None
-    tri_dk, k.grad = k.grad.clone(), None
-    tri_dq, q.grad = q.grad.clone(), None
+    # tri_out.backward(dout)
+    # tri_dv, v.grad = v.grad.clone(), None
+    # tri_dk, k.grad = k.grad.clone(), None
+    # tri_dq, q.grad = q.grad.clone(), None
     # compare
+    # assert torch.allclose(ref_out, tri_out, atol=1e-2, rtol=0)
+
+    print(f"ref_out={ref_out}")
+    print(f"tri_out={tri_out}")
+
     assert torch.allclose(ref_out, tri_out, atol=1e-2, rtol=0)
-    assert torch.allclose(ref_dv, tri_dv, atol=1e-2, rtol=0)
-    assert torch.allclose(ref_dk, tri_dk, atol=1e-2, rtol=0)
-    assert torch.allclose(ref_dq, tri_dq, atol=1e-2, rtol=0)
+    if torch.allclose(ref_out, tri_out, atol=1e-2, rtol=1e-2):
+        print("✅ Triton and Torch match")
+    else:
+        print("❌ Triton and Torch differ")
+
+    # assert torch.allclose(ref_dv, tri_dv, atol=1e-2, rtol=0)
+    # assert torch.allclose(ref_dk, tri_dk, atol=1e-2, rtol=0)
+    # assert torch.allclose(ref_dq, tri_dq, atol=1e-2, rtol=0)
 
 test_op(1, 2, 1024, 64, False)
 

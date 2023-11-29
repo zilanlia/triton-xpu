@@ -124,11 +124,15 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
         numElements = (blockShapeM / loadM) * elemShape[3];
       } else if(mmaFlag == 1){
         int loadK = shape[0];
-        loadK = std::min(std::max(loadK, dim0), 32);
+        // loadK = std::min(std::max(loadK, dim0), 32);
+        //to do for transpose
+        loadK = dim0;
+        llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] loadK: " << loadK << "\n";
         tdescTy = TensorDescType::get({loadK, dim1}, 
                     elemTy, MemoryScopeAttr::get(type.getContext(), MemoryScope::GLOBAL));
         int blockShapeK = elemShape[2] * elemStride[2];
         numElements = (blockShapeK / loadK) * elemShape[3];
+        llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] numElements: " << numElements << "\n";
       } else if(mmaFlag == 3){
         //todo
         tdescTy = TensorDescType::get({shape[0], shape[1]}, 
@@ -187,12 +191,10 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
         resultTypes.assign(1, newType);
         return success();
       }
-      
+
       int dim0 = elemStride[2] < shape[0] ? elemStride[2] : shape[0];
       int dim1 = elemStride[3] < shape[1] ? elemStride[3] : shape[1];
-      // llvm::outs()<<"\n\n[convertTritonTensorType] dim0: "<<dim0<<"\n";
-      // llvm::outs()<<"\n\n[convertTritonTensorType] dim0: "<<dim1<<"\n";
-      
+
       if(MmaFlag==2){
         auto newType = mlir::VectorType::get(ArrayRef<int64_t>{dim0, dim1}, elemTy);
         int size = elemShape[2] * elemShape[3];

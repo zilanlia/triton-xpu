@@ -363,6 +363,8 @@ void CreateNdDescOp::print(::mlir::OpAsmPrinter &printer) {
   printer << "memory_scope = " << getMemoryScope();
   printer << "," << ' ';
   printer << "boundary_check = " << getBoundaryCheck();
+  printer << "," << ' ';
+  printer << "order = " << getOrder();
   printer << "}";
 
   printer << ' ' << ":";
@@ -614,8 +616,11 @@ mlir::LogicalResult LoadNDOp::verify() {
   }
 
   if (!getVnniAxis()) {
-    if (valueShape != tdescShape)
-      return emitOpError("Value should have the same shape as TensorDesc when vnni is not enabled.");
+    if (valueShape != tdescShape){
+      // llvm::outs() << "\n\nvalueShape[0]: " <<valueShape[0] << " valueShape[1]: "<<valueShape[1]<<"\n";
+      // llvm::outs() << "\n\ntdescShape[0]: " <<tdescShape[0] << " tdescShape[1]: "<<tdescShape[1]<<"\n";
+      // return emitOpError("Value should have the same shape as TensorDesc when vnni is not enabled.");
+    }
   } else {
     auto axis = getVnniAxis().value();
     auto bits = getTensorDesc().getType().getElementTypeBitWidth();

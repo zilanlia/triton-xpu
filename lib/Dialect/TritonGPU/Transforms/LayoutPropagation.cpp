@@ -252,7 +252,7 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
     // const std::vector<unsigned int> aOrderVec{1, 0, 1, 0};
 
     //attention
-    const std::vector<unsigned int> aThreadShapeVec{2, 8, 8, 2};
+    const std::vector<unsigned int> aThreadShapeVec{2, 8, 8, 1};
     const std::vector<unsigned int> aThreadStrideVec{1, 2, 16, 0};
     const std::vector<unsigned int> aElemPerThreadVec{4, 2, 2, 4};
     const std::vector<unsigned int> aElemStrideVec{2, 1, 8, 16};
@@ -450,6 +450,15 @@ public:
         }
       }
     });
+
+    // op->walk([&](Operation *curr) {
+    //   if (auto makeTensorPtrOp = dyn_cast<MakeTernsorPtrOp>(curr)){
+    //     auto order = makeTensorPtrOp.getOrder();
+    //     if(order[0]==0){
+  
+    //     }
+    //   }
+    // });
 
     llvm::outs()<<"\n\n[After propagateLayout]tritonGPU IR: "<<"\n";
     op->print(llvm::outs());
