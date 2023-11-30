@@ -393,7 +393,6 @@ mlir::LogicalResult CreateNdDescOp::verify() {
 mlir::ParseResult CreateDescOp::parse(mlir::OpAsmParser &parser,
                                       mlir::OperationState &result) {
   mlir::OpAsmParser::UnresolvedOperand sourceRawOperands[1];
-  llvm::outs()<<"\n\nCreateDescOp::parse 0\n";
   llvm::ArrayRef<mlir::OpAsmParser::UnresolvedOperand> sourceOperands(
       sourceRawOperands);
   llvm::SMLoc sourceOperandsLoc = parser.getCurrentLocation();
@@ -841,7 +840,6 @@ mlir::LogicalResult DpasOp::verify() {
 
 ::mlir::ParseResult LoadGatherOp::parse(::mlir::OpAsmParser &parser,
                                         ::mlir::OperationState &result) {
-  llvm::outs() << "\n\nLoadGatherOp::parse: "<<"\n";
   mlir::OpAsmParser::UnresolvedOperand TensorDescRawOperands[1];
   llvm::ArrayRef<::mlir::OpAsmParser::UnresolvedOperand> TensorDescOperands(
       TensorDescRawOperands);
@@ -903,7 +901,6 @@ mlir::LogicalResult DpasOp::verify() {
   if (parser.resolveOperands(maskOperands, maskTypes, maskOperandsLoc,
                              result.operands))
     return ::mlir::failure();
-  llvm::outs() << "\n\nparser.resolveOperands: "<<"\n";
   return ::mlir::success();
 }
 

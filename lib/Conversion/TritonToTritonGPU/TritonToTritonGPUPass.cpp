@@ -246,10 +246,7 @@ struct TritonExpandDimsPattern
     auto encoding = src.getType().cast<RankedTensorType>().getEncoding();
     Type newRetType = RankedTensorType::get(shape, elementType, encoding); 
     Location loc = op.getLoc();
-    // llvm::outs() << "\n\n[TritonExpandDimsPattern] src: " << src <<"\n";
-    // llvm::outs() << "\n\n[TritonExpandDimsPattern] adaptor.getAxis(): " << adaptor.getAxis() <<"\n";
     triton::ExpandDimsOp expandDimsOp = rewriter.create<triton::ExpandDimsOp>(loc, newRetType, src, adaptor.getAxis());
-    // llvm::outs() << "\n\n[TritonExpandDimsPattern] expandDimsOp: " << expandDimsOp <<"\n";
     addNamedAttrs(expandDimsOp, adaptor.getAttributes());
     rewriter.replaceOp(op, expandDimsOp.getResult());
     return success();

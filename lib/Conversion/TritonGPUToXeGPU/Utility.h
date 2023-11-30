@@ -149,6 +149,18 @@
 #define i32_arr_attr(...) rewriter.getI32ArrayAttr({__VA_ARGS__})
 #define i64_arr_attr(...) rewriter.getI64ArrayAttr({__VA_ARGS__})
 
+void dbgInfo(const std::string message);
+
+void dbgInfo(const std::string message, mlir::Value value);
+
+void dbgInfo(const std::string message, mlir::Type type);
+
+void dbgInfo(const std::string message, int value);
+
+void dbgInfo(const std::string message, mlir::Operation op);
+
+void dbgInfo(const std::string message, mlir::Attribute attr);
+
 namespace mlir {
 namespace triton {
 

@@ -44,7 +44,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "TritonGPUToXeGPU.h"
 #include "ReduceOpToXeGPU.h"
-#include "ScfOpToXeGPU.h"
+#include "SCFOpToXeGPU.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -235,7 +235,6 @@ void TritonGPUToXeGPUPass::runOnOperation() {
   RewritePatternSet func_patterns(context);
   func_patterns.add<XeGPUFuncOpConversion>(xeGPUTypeConverter, context, 0, 1);
 
-  llvm::outs()<<"\n\napplyPartialConversion\n";
   if (failed(
           applyPartialConversion(tritonGPUModule, xeGPUFuncTarget, std::move(func_patterns))))
     return signalPassFailure();

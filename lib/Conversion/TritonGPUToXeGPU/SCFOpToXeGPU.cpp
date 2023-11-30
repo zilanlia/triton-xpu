@@ -17,8 +17,9 @@
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Transforms/OneToNTypeConversion.h>
 
-#include "ScfOpToXeGPU.h"
+#include "SCFOpToXeGPU.h"
 #include "triton/Dialect/XeGPU/IR/XeGPUOps.h"
+#include "TritonGPUToXeGPUBase.h"
 #include "Utility.h"
 
 using namespace mlir;
@@ -26,9 +27,9 @@ using namespace mlir::triton;
 using namespace mlir::spirv;
 using namespace mlir::triton::xegpu;
 
-class ForOpToXeGPUPattern : public OpConversionPattern<scf::ForOp> {
+class ForOpToXeGPUPattern : public ConvertTritonGPUToXeGPUPattern<scf::ForOp> {
 public:
-  using OpConversionPattern<scf::ForOp>::OpConversionPattern;
+  using ConvertTritonGPUToXeGPUPattern<scf::ForOp>::ConvertTritonGPUToXeGPUPattern;
 
   LogicalResult
   matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
@@ -110,14 +111,14 @@ public:
   }
 };
 
-class YieldOpToXeGPUPattern : public OpConversionPattern<scf::YieldOp> {
+class YieldOpToXeGPUPattern : public ConvertTritonGPUToXeGPUPattern<scf::YieldOp> {
 public:
-  using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
+  using ConvertTritonGPUToXeGPUPattern<scf::YieldOp>::ConvertTritonGPUToXeGPUPattern;
 
   LogicalResult
   matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] Start\n";
+    dbgInfo("[YieldOpToXeGPUPattern]");
     llvm::SmallVector<mlir::Value> convertedResults;
     for (Value values: adaptor.getResults()){
       if(auto *parentOp = values.getDefiningOp()){
@@ -139,12 +140,9 @@ public:
         convertedResults.push_back(values);
       }
     }
-    // for(auto result : convertedResults){
-    //   llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] result:"<<result<<"\n";
-    // }
 
     auto newOp = rewriter.create<mlir::scf::YieldOp>(op.getLoc(), convertedResults).getResults();
-    llvm::outs()<<"\n\n[YieldOpToXeGPUPattern] newYieldOP:"<<newOp[0]<<"\n";
+    dbgInfo("[YieldOpToXeGPUPattern]newYieldOP", newOp[0]);
     rewriter.replaceOp(op, newOp);
     return mlir::success();
   }
@@ -152,7 +150,7 @@ public:
 
 void populateScfOpToXeGPUPatterns(
     TritonGPUToXeGPUTypeConverter &typeConverter, RewritePatternSet &patterns) {
-  llvm::outs()<<"\n\npopulateScfOpToXeGPUPatterns\n";
+  dbgInfo("[populateScfOpToXeGPUPatterns]");
   auto context = patterns.getContext();
   patterns.add<ForOpToXeGPUPattern, YieldOpToXeGPUPattern>(typeConverter, context);
 }

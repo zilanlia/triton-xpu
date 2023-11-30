@@ -17,6 +17,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
@@ -68,13 +69,13 @@ LogicalResult Prefetcher::initialize() {
       dotsInFor.push_back(dotOp);
 
   if (dotsInFor.empty()){
-    llvm::outs() << "\n\n[Prefetch to cache][No dotOp in For Loop]\n";
+    dbgInfo("[Prefetch to cache][No dotOp in For Loop]");
     return failure();
   }
 
   // todo when used in flash attention that has 2 dots in the loop
   if (dotsInFor.size() > 1){
-    llvm::outs()<<"\n\n[Prefetch to cache][dotsInFor.size() > 1]";
+    dbgInfo("[Prefetch to cache][dotsInFor.size() > 1]");
     return failure();
   }
 
@@ -117,8 +118,8 @@ LogicalResult Prefetcher::initialize() {
   for (triton::DotOp dot : dotsInFor) {
     Value aCvtSrc = getCvtLayoutSrc(dot.getA());
     Value bCvtSrc = getCvtLayoutSrc(dot.getB());
-    llvm::outs()<<"\n\n[Prefetch to cache]aCvt: "<<aCvtSrc<<"\n";
-    llvm::outs()<<"\n\n[Prefetch to cache]bCvt: "<<bCvtSrc<<"\n";
+    dbgInfo("[Prefetch to cache]aCvt", aCvtSrc);
+    dbgInfo("[Prefetch to cache]bCvt", bCvtSrc);
 
     if (aCvtSrc && bCvtSrc) {
       auto aLoadOp = aCvtSrc.getDefiningOp<triton::LoadOp>();
@@ -127,8 +128,8 @@ LogicalResult Prefetcher::initialize() {
       Value aPtr = getIncomingOp(aLoadOp.getPtr());
       Value bPtr = getIncomingOp(bLoadOp.getPtr());
 
-      llvm::outs()<<"\n\n[Prefetch to cache]aPtr: "<<aPtr<<"\n";
-      llvm::outs()<<"\n\n[Prefetch to cache]bPtr: "<<bPtr<<"\n";
+      dbgInfo("[Prefetch to cache]aPtr", aPtr);
+      dbgInfo("[Prefetch to cache]bPtr", bPtr);
 
       // Only prefetch loop arg
       if (aPtr && bPtr) {
@@ -144,8 +145,8 @@ LogicalResult Prefetcher::initialize() {
         dot2aLoad[dot] = aLoadOp;
         dot2bLoad[dot] = bLoadOp;
 
-        // llvm::outs()<<"\n\n[Prefetch to cache]dot2aYield[dot]: "<<dot2aYield[dot]<<"\n";
-        // llvm::outs()<<"\n\n[Prefetch to cache]dot2bYield[dot]: "<<dot2bYield[dot]<<"\n";
+        // dbgInfo("[Prefetch to cache]dot2aYield[dot]", dot2aYield[dot]);
+        // dbgInfo("[Prefetch to cache]dot2bYield[dot]", dot2bYield[dot]);
       }
     }
   }
@@ -164,7 +165,7 @@ LogicalResult Prefetcher::initialize() {
 Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp) {
   Location loc = ptr.getLoc();
   auto context = ptr.getContext();
-  llvm::outs()<<"\n\n[Prefetch to cahce]ptr: "<<ptr<<"\n";
+  dbgInfo("[Prefetch to cahce]ptr: ", ptr);
   auto ptrType = ptr.getType().cast<triton::PointerType>();
   auto tensorType = ptrType.getPointeeType().cast<RankedTensorType>();
   auto encoding = tensorType.getEncoding();
@@ -190,7 +191,7 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
   auto sgIdM = udiv(sgId, i32_val(sgSizeN));
   auto sgIdN = urem(sgId, i32_val(sgSizeN));
 
-  //llvm::outs()<<"\n\n[Prefetch to cahce]tensorType: "<<tensorType<<"\n";
+  //dbgInfo("[Prefetch to cahce]tensorType", tensorType);
 
   auto elemType = tensorType.getElementType();
   SmallVector<int32_t> blockShape{
@@ -292,7 +293,7 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
   ptrType = PointerType::get(newType, 1);
   prefetchPtr.setType(ptrType);
 
-  //llvm::outs()<<"\n\n[Prefetch to cahce]prefetchPtr: "<<prefetchPtr<<"\n";
+  //dbgInfo("[Prefetch to cahce]prefetchPtr", prefetchPtr);
 
   return prefetchPtr;
 }
@@ -343,7 +344,8 @@ scf::ForOp Prefetcher::createNewForOp() {
     if(dotIdx >= 0){
       DotOp dotOp = dots[dotIdx].getDefiningOp<DotOp>();
       Operation *newLoadOp = builder.clone(*loadOp, mapping);
-      llvm::outs()<<"\n\n[Prefetch to cache] newLoadOp: "<<*newLoadOp<<"\n";
+      dbgInfo("[Prefetch to cache]newLoadOp");
+      //newLoadOp->print(llvm::outs());
       auto insertionPoint = builder.saveInsertionPoint();
       builder.setInsertionPointAfter(newLoadOp);
       Location loc = newLoadOp->getLoc();
@@ -424,7 +426,7 @@ public:
 
   void runOnOperation() override {
     getOperation()->walk([&](scf::ForOp forOp) {
-      llvm::outs()<<"\n\n[Prefetch to cache]\n";
+      dbgInfo("[Prefetch to cache]");
       Prefetcher prefetcher(forOp);
 
       if (prefetcher.initialize().failed())

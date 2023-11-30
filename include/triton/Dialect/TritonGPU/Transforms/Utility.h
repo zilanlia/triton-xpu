@@ -8,6 +8,18 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
+void dbgInfo(const std::string message);
+
+void dbgInfo(const std::string message, mlir::Value value);
+
+void dbgInfo(const std::string message, mlir::Type type);
+
+void dbgInfo(const std::string message, int value);
+
+void dbgInfo(const std::string message, mlir::Operation op);
+
+void dbgInfo(const std::string message, mlir::Attribute attr);
+
 namespace mlir {
 
 namespace triton {

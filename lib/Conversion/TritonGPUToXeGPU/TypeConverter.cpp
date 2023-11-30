@@ -82,7 +82,6 @@ TritonGPUToXeGPUTypeConverter::TritonGPUToXeGPUTypeConverter(
 std::optional<mlir::LogicalResult>
 TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
         triton::PointerType type, llvm::SmallVectorImpl<mlir::Type>& resultTypes)  {
-  llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] convertTritonPointerType\n";
   auto context = type.getContext();
   auto pointeeType = type.getPointeeType();
 
@@ -101,7 +100,7 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
     }
 
     if(layout.isa<GenericEncodingAttr>()){
-      auto genericLayout = llvm::dyn_cast<GenericEncodingAttr>(layout);
+      auto genericLayout = dyn_cast<GenericEncodingAttr>(layout);
       auto mmaFlag = genericLayout.getMmaFlag();
       auto threadShape = genericLayout.getThreadShape();
       auto elemShape = genericLayout.getElemPerThread();
@@ -127,12 +126,10 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
         // loadK = std::min(std::max(loadK, dim0), 32);
         //to do for transpose
         loadK = dim0;
-        llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] loadK: " << loadK << "\n";
         tdescTy = TensorDescType::get({loadK, dim1}, 
                     elemTy, MemoryScopeAttr::get(type.getContext(), MemoryScope::GLOBAL));
         int blockShapeK = elemShape[2] * elemStride[2];
         numElements = (blockShapeK / loadK) * elemShape[3];
-        llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] numElements: " << numElements << "\n";
       } else if(mmaFlag == 3){
         //todo
         tdescTy = TensorDescType::get({shape[0], shape[1]}, 
@@ -141,7 +138,6 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
       } 
 
       resultTypes.assign(numElements, tdescTy);
-      //llvm::outs()<<"\n\n[TritonGPUToXeGPUTypeConverter] resultTypes[0]: "<< resultTypes[0] <<"\n";
     }
   } else {
     auto newType = MemRefType::get({ShapedType::kDynamic}, pointeeType);
@@ -172,11 +168,11 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
       Type newType;
       if(MmaFlag==-1){
         std::vector<int64_t> size{threadShape[0]};
-        newType = ::mlir::triton::xegpu::TensorDescType::get(context, size, elemTy, 
+        newType = TensorDescType::get(context, size, elemTy, 
                                                 ScatteredAttr::get(context));
       } else if(MmaFlag==2) { // dots related
         std::vector<int64_t> size{threadStride[2]};
-        newType = ::mlir::triton::xegpu::TensorDescType::get(context, size, elemTy, 
+        newType = TensorDescType::get(context, size, elemTy, 
                                                 ScatteredAttr::get(context));
       } else{
         

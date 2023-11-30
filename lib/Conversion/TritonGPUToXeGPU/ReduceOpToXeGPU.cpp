@@ -16,7 +16,7 @@
 
 #include "ReduceOpToXeGPU.h"
 #include "triton/Dialect/XeGPU/IR/XeGPUOps.h"
-//#include "../TritonGPUToLLVM/Utility.h"
+#include "TritonGPUToXeGPUBase.h"
 #include "Utility.h"
 
 
@@ -26,9 +26,9 @@ using namespace mlir::spirv;
 using namespace mlir::triton::xegpu;
 using mlir::triton::gpu::GenericEncodingAttr;
 
-class ReduceOpToXeGPUPattern : public OpConversionPattern<triton::ReduceOp> {
+class ReduceOpToXeGPUPattern : public ConvertTritonGPUToXeGPUPattern<triton::ReduceOp> {
 public:
-  using OpConversionPattern<triton::ReduceOp>::OpConversionPattern;
+  using ConvertTritonGPUToXeGPUPattern<triton::ReduceOp>::ConvertTritonGPUToXeGPUPattern;
 
   LogicalResult
   matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
@@ -131,7 +131,7 @@ private:
     auto tensorDescType = ::mlir::triton::xegpu::TensorDescType::get(context, storeShape, elemType, 
                                                                   MemoryScopeAttr::get(context, MemoryScope::SLM));
 
-    llvm::outs()<<"\n\ntensorDescType: "<<tensorDescType<<"\n";
+    dbgInfo("[ReduceOpToXeGPUPatterns]tensorDescType", tensorDescType);
 
     //nd store
     Value start = rewriter.create<arith::ConstantOp>(loc, i32_ty, rewriter.getI32IntegerAttr(0));
@@ -195,8 +195,7 @@ private:
 
     acc = load0;
     accumulate(rewriter, loc, reduceOp, acc, load1);
-
-    // llvm::outs()<<"\n\nafter reduce whthin subgroup acc: "<<acc<<"\n";
+    dbgInfo("[ReduceOpToXeGPUPatterns]after reduce whthin subgroup acc", acc);
     // reduce with workgroup
     for (unsigned N = 16; N > 1; N >>= 1) {
       curVecType = mlir::VectorType::get(N, elemType);
@@ -216,7 +215,7 @@ private:
     acc = extract_val(elemType, acc, rewriter.getI32ArrayAttr(0));
     accumulate(rewriter, loc, reduceOp, acc, cur);
 
-    llvm::outs()<<"\n\nacc: "<<acc<<"\n";
+    dbgInfo("[ReduceOpToXeGPUPatterns]acc", acc);
     rewriter.replaceOp(op, acc);
     return success();
   }
@@ -288,12 +287,9 @@ private:
     // reduce within different blocks
     for(int i = 0; i < accNums; i++){
       acc[i] = src[i * accBlockNums];
-      //curVecType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], shape[1], 1}, elemType);
-      //acc[i] = rewriter.create<vector::ShapeCastOp>(loc, curVecType, acc[i]);
 
       for(int j = 1; j < accBlockNums; j++){
         cur = src[i * accBlockNums + j];
-        //cur = rewriter.create<vector::ShapeCastOp>(loc, curVecType, cur);
         accumulate(rewriter, loc, reduceOp, acc[i], cur);
       }
 
@@ -330,8 +326,7 @@ private:
       acc[0] = rewriter.create<spirv::VectorShuffleOp>(loc, curVecType, acc[0], acc[i], rewriter.getI32ArrayAttr(indices));
     }
 
-
-    llvm::outs()<<"\n\nacc: "<<acc[0]<<"\n";
+    dbgInfo("[ReduceOpToXeGPUPatterns]acc", acc[0]);
     rewriter.replaceOp(op, acc[0]);
     return success();
   }
@@ -339,7 +334,7 @@ private:
 
 void populateReduceOpToXeGPUPatterns(
     TritonGPUToXeGPUTypeConverter &typeConverter, RewritePatternSet &patterns) {
-  llvm::outs()<<"\n\npopulateReduceOpToXeGPUPatterns\n";
+  dbgInfo("[populateReduceOpToXeGPUPatterns]");
   auto context = patterns.getContext();
   patterns.add<ReduceOpToXeGPUPattern>(typeConverter, context);
 }

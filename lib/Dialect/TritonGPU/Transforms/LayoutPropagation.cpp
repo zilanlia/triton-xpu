@@ -17,6 +17,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #include <queue>
 #include <vector>
@@ -58,7 +59,7 @@ void createGraph(opsVectorTy ops, opsGraphTy& preOpsGraph, opsGraphTy& sucOpsGra
 
     for(auto operand : op->getOperands()){
       auto type = operand.getType();
-      //llvm::outs() << "\n\n[createGraph]type: "<<type<<"\n";
+      //dbgInfo("[createGraph]type", type);
       if(!checkType(type)){
         continue;
       }
@@ -89,14 +90,12 @@ void createGraph(opsVectorTy ops, opsGraphTy& preOpsGraph, opsGraphTy& sucOpsGra
       //use the input of forOp;
       if(auto forOp = llvm::dyn_cast<ForOp>(op->getParentOp())) 
       {
-        //llvm::outs()<<"[forOp related Ops] op: "<<*op<<"\n";
         for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
           if (operand == forOp.getRegionIterArgs()[i]) {
             auto operandInForOp = forOp.getOperands()[i + 3];
             auto *forLoopParentOp = operandInForOp.getDefiningOp();
             preOpsGraph[op].insert(forLoopParentOp);
             sucOpsGraph[forLoopParentOp].insert(op);
-            //llvm::outs()<<"[forOp related Ops] i: "<<i<<"\n";
             break;
           }
         }
@@ -109,13 +108,13 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
                         opsGraphTy &preOpsGraph, opsGraphTy &sucOpsGraph, opsSetTy& opsSet){
   while(!opsQueue.empty()){
     auto op = opsQueue.front();
-    //llvm::outs() << "\n\n[propagateLayout]op: "<<*op<<"\n";
+    //dbgInfo("[propagateLayout]op", *op);
     opsSet.erase(op);
     opsQueue.pop();
 
     if(auto ConstantOp = dyn_cast<arith::ConstantOp>(op)){
       auto type = ConstantOp.getValue().getType();
-      //llvm::outs() << "\n\n[propagateLayout ConstantOp]type: "<<type<<"\n";
+      //dbgInfo("[propagateLayout ConstantOp]type", type);
       if (type.isa<mlir::RankedTensorType>()){
         auto value = ConstantOp.getValue().dyn_cast<DenseElementsAttr>();
         auto tensorType = type.cast<RankedTensorType>();
@@ -134,7 +133,6 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
         Type type = operand.getType();
         bool isPointerType = 0;
         int addr;
-        //llvm::outs() << "\n\n[propagateLayout]type: "<<type<<"\n";
         if(isa<triton::PointerType>(type)){
           addr = type.cast<triton::PointerType>().getAddressSpace();
           type = type.cast<triton::PointerType>().getPointeeType();
@@ -145,8 +143,10 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
           auto tensorType = type.cast<RankedTensorType>();
           auto layout = tensorType.getEncoding();
           if(isa<DotOperandEncodingAttr>(layout)){
-            llvm::outs()<<"\n\n[LayoutPropagation]op: " << *op <<"\n";
-            llvm::outs()<<"\n\n[LayoutPropagation]layout: " << layout <<"\n";
+            // dbgInfo("[LayoutPropagation]op");
+            // if(std::getenv("ENABLE_TRITON_DEBUG"))
+            //   op->print(llvm::outs());
+            // dbgInfo("[LayoutPropagation]layout", layout);
             auto opIdx = layout.cast<DotOperandEncodingAttr>().getOpIdx();
             auto newEncoding = DotOperandEncodingAttr::get(context, opIdx, encoding, 0);
             auto newType = RankedTensorType::get(tensorType.getShape(), 
@@ -179,19 +179,21 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
         Type type = result.getType();
         bool isPointerType = 0;
         int addr;
-        //llvm::outs() << "\n\n[propagateLayout]type: "<<type<<"\n";
+        //dbgInfo("[propagateLayout]type", type);
         if(isa<triton::PointerType>(type)){
           addr = type.cast<triton::PointerType>().getAddressSpace();
           type = type.cast<triton::PointerType>().getPointeeType();
           isPointerType = 1;
         }
-        //llvm::outs() << "\n\n[propagateLayout]after convert pointType : "<<type<<"\n";
+        //dbgInfo("[propagateLayout]after convert pointType", type);
         if(type.isa<mlir::RankedTensorType>()){
           auto tensorType = type.cast<RankedTensorType>();
           auto layout = tensorType.getEncoding();
           if(isa<DotOperandEncodingAttr>(layout)){
-            llvm::outs()<<"\n\n[LayoutPropagation]op: " << *op <<"\n";
-            llvm::outs()<<"\n\n[LayoutPropagation]layout: " << layout <<"\n";
+            // dbgInfo("[LayoutPropagation]op");
+            // if(std::getenv("ENABLE_TRITON_DEBUG"))
+            //   op->print(llvm::outs());
+            // dbgInfo("[LayoutPropagation]layout: ", layout);
             auto opIdx = layout.cast<DotOperandEncodingAttr>().getOpIdx();
             auto newEncoding = DotOperandEncodingAttr::get(context, opIdx, encoding, 0);
             auto newType = RankedTensorType::get(tensorType.getShape(), 
@@ -272,7 +274,7 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
     auto aTensorType = A.getType().dyn_cast<RankedTensorType>();
     auto newType = RankedTensorType::get(aTensorType.getShape(), aTensorType.getElementType(),
                 dotLayout);
-    llvm::outs()<<"\n\n[DotOp]matA newType: "<<newType<<"\n";
+    dbgInfo("[DotOp]matA newType", newType);
     A.setType(newType);
 
     // dotOp
@@ -305,7 +307,7 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
     auto bTensorType = B.getType().dyn_cast<RankedTensorType>();
     newType = RankedTensorType::get(bTensorType.getShape(), bTensorType.getElementType(),
                 dotLayout);
-    llvm::outs()<<"\n\n[DotOp]matB newType: "<<newType<<"\n";
+    dbgInfo("[DotOp]matB newType", newType);
     B.setType(newType);
 
     //dot
@@ -337,7 +339,7 @@ void setDotOpLayout(MLIRContext *context, Operation *curr){
     auto cTensorType = C.getType().dyn_cast<RankedTensorType>();
     newType = RankedTensorType::get(cTensorType.getShape(), cTensorType.getElementType(),
                 encoding);
-    llvm::outs()<<"\n\n[DotOp]matC/matD newType: "<<newType<<"\n";
+    dbgInfo("[DotOp]matC/matD newType", newType);
     C.setType(newType);
 
     auto D = dotOp.getD();
@@ -379,7 +381,7 @@ public:
     // Find the parent and child operations of each op
     createGraph(opsVector, preOpsGraph, sucOpsGraph);
 
-    if(0){
+    if(0 && std::getenv("ENABLE_TRITON_DEBUG")){
       for(auto op : opsVector){
         llvm::outs()<<"\n\n[tritonGPUIR] op: \n"<<*op<<"\n";
         llvm::outs()<<"[tirtonGPUIR] preOps: \n";
@@ -397,8 +399,8 @@ public:
     // propagate Layout, start from DotOp
     op->walk([&](Operation *curr) {
       if (auto dotOp = dyn_cast<triton::DotOp>(curr)){
-        llvm::outs()<<"\n\n[LayoutPropagation] dotOp in module: "<<dotOp<<"\n";
-        llvm::outs()<<"\n\n[LayoutPropagation] opsSet.count(dotOp): "<<opsSet.count(dotOp)<<"\n";
+        dbgInfo("[LayoutPropagation] dotOp in module", dotOp);
+        dbgInfo("[LayoutPropagation] opsSet.count(dotOp)", opsSet.count(dotOp));
         if(opsSet.count(dotOp) == 1){
           opsSet.erase(dotOp);
           auto matA = dotOp.getA();
@@ -414,8 +416,8 @@ public:
           bEncoding = bEncoding.dyn_cast<DotOperandEncodingAttr>()
                                         .getParent().cast<GenericEncodingAttr>();
 
-          llvm::outs() << "\n\naEncoding: " << aEncoding << "\n";
-          llvm::outs() << "\n\nbEncoding: " << bEncoding << "\n";
+          dbgInfo("[LayoutPropagation]aEncoding" , aEncoding);
+          dbgInfo("[LayoutPropagation]bEncoding" , bEncoding);
           opsQueueTy aRelatedOpsQueue, bRelatedOpsQueue, cRelatedOpsQueue;
 
           for(auto preOp : preOpsGraph[dotOp]){
@@ -460,7 +462,7 @@ public:
     //   }
     // });
 
-    llvm::outs()<<"\n\n[After propagateLayout]tritonGPU IR: "<<"\n";
+    dbgInfo("[After propagateLayout]tritonGPU IR");
     op->print(llvm::outs());
 
     return;
