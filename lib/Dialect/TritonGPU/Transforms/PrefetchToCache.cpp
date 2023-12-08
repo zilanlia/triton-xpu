@@ -74,10 +74,10 @@ LogicalResult Prefetcher::initialize() {
   }
 
   // todo when used in flash attention that has 2 dots in the loop
-  if (dotsInFor.size() > 1){
-    dbgInfo("[Prefetch to cache][dotsInFor.size() > 1]");
-    return failure();
-  }
+  // if (dotsInFor.size() > 1){
+  //   dbgInfo("[Prefetch to cache][dotsInFor.size() > 1]");
+  //   return failure();
+  // }
 
   // returns source of cvt
   auto getCvtLayoutSrc = [](Value v) -> Value {
@@ -104,8 +104,22 @@ LogicalResult Prefetcher::initialize() {
 
   auto getIncomingOp = [this](Value v) -> Value {
     if (auto arg = v.dyn_cast<BlockArgument>())
-      if (arg.getOwner()->getParentOp() == forOp.getOperation())
-        return forOp.getOpOperandForRegionIterArg(arg).get();
+      if (arg.getOwner()->getParentOp() == forOp.getOperation()){
+        Value ptr = forOp.getOpOperandForRegionIterArg(arg).get();
+        if(auto loadOp = ptr.getDefiningOp<triton::MakeTensorPtrOp>()){
+          return ptr;
+        }else if(auto advanceOp = ptr.getDefiningOp<triton::AdvanceOp>()){
+          ptr = advanceOp.getPtr();
+          while(auto *parentOp = ptr.getDefiningOp()){
+            if(auto parentAdvanceOp = dyn_cast<AdvanceOp>(parentOp)){
+              ptr = parentAdvanceOp.getPtr();
+            }else{
+              break;
+            }
+          }
+          return ptr;
+        }
+      }
     return Value();
   };
 
@@ -122,31 +136,35 @@ LogicalResult Prefetcher::initialize() {
     dbgInfo("[Prefetch to cache]bCvt", bCvtSrc);
 
     if (aCvtSrc && bCvtSrc) {
-      auto aLoadOp = aCvtSrc.getDefiningOp<triton::LoadOp>();
-      auto bLoadOp = bCvtSrc.getDefiningOp<triton::LoadOp>();
+      if(auto *parentOp = aCvtSrc.getDefiningOp()){
+        if(auto aLoadOp = dyn_cast<triton::LoadOp>(parentOp)){
+          Value aPtr = getIncomingOp(aLoadOp.getPtr());
+          dbgInfo("[Prefetch to cache]aPtr", aPtr);
+          if(aPtr){
+            dots.insert(dot);
+            dotas.insert(dot.getA());
+            dot2aPtr[dot] = aPtr;
+            dot2aLoopArg[dot] = aLoadOp.getPtr();
+            dot2aYield[dot] = getYieldOp(aLoadOp.getPtr());
+            dot2aLoad[dot] = aLoadOp;
+          }
+        }
+      }
 
-      Value aPtr = getIncomingOp(aLoadOp.getPtr());
-      Value bPtr = getIncomingOp(bLoadOp.getPtr());
-
-      dbgInfo("[Prefetch to cache]aPtr", aPtr);
-      dbgInfo("[Prefetch to cache]bPtr", bPtr);
-
-      // Only prefetch loop arg
-      if (aPtr && bPtr) {
-        dots.insert(dot);
-        dotas.insert(dot.getA());
-        dotbs.insert(dot.getB());
-        dot2aPtr[dot] = aPtr;
-        dot2bPtr[dot] = bPtr;
-        dot2aLoopArg[dot] = aLoadOp.getPtr();
-        dot2bLoopArg[dot] = bLoadOp.getPtr();
-        dot2aYield[dot] = getYieldOp(aLoadOp.getPtr());
-        dot2bYield[dot] = getYieldOp(bLoadOp.getPtr());
-        dot2aLoad[dot] = aLoadOp;
-        dot2bLoad[dot] = bLoadOp;
-
-        // dbgInfo("[Prefetch to cache]dot2aYield[dot]", dot2aYield[dot]);
-        // dbgInfo("[Prefetch to cache]dot2bYield[dot]", dot2bYield[dot]);
+      if(auto *parentOp = bCvtSrc.getDefiningOp()){
+        if(auto bLoadOp = dyn_cast<triton::LoadOp>(parentOp)){
+          Value bPtr = getIncomingOp(bLoadOp.getPtr());
+          dbgInfo("[Prefetch to cache]bPtr", bPtr);
+          if(bPtr){
+            if(dots.count(dot)==0)
+              dots.insert(dot);
+            dotbs.insert(dot.getB());
+            dot2bPtr[dot] = bPtr;
+            dot2bLoopArg[dot] = bLoadOp.getPtr();
+            dot2bYield[dot] = getYieldOp(bLoadOp.getPtr());
+            dot2bLoad[dot] = bLoadOp;
+          }
+        }
       }
     }
   }
@@ -180,7 +198,7 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
   Value subgroubId = builder.create<::mlir::gpu::SubgroupIdOp>(loc, builder.getIndexType());
   Value sgId = builder.create<UnrealizedConversionCastOp>(loc, i64_ty, subgroubId).getResult(0);
   sgId = builder.create<arith::TruncIOp>(loc, i32_ty, sgId);
-  sgId = urem(sgId, i32_val(32)); //subGroupNUm = 32
+  sgId = urem(sgId, i32_val(8)); //subGroupNUm 32 for gemm, 8 for attention
 
   int sgBlockDim0 = elemShape[2] * elemStride[2];
   int sgBlockDim1 = elemShape[3] * elemStride[3];
@@ -207,13 +225,19 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
   SmallVector<Value> tensorOffsets = makePtrOp.getOffsets();
 
   Value prefetchPtr;
-  int prefetchStage = 3;
+
+  //todo
+  int prefetchStage = 1;
 
   auto newLayout = layout.updatemmaFlag(3);
 
   if(mmaFlag == 0){ //prefetch matrix A
     //to do: need to add some inference for newBlockShape
     //https://gfxspecs.intel.com/Predator/Home/Index/55490
+    // newBlockShape[0] = 8;
+    // newBlockShape[1] = 32;
+
+    //for attention 1024*64
     newBlockShape[0] = 8;
     newBlockShape[1] = 32;
 
@@ -251,7 +275,7 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
 
   }else{ //prefetch matrix B
     //todo need to add some inference for newBlockShape
-    newBlockShape[0] = 8;
+    newBlockShape[0] = 16;
     newBlockShape[1] = 32;
     int prefetchInDim1 = sgBlockDim1 / newBlockShape[1];
     int prefetchInDim0 = sgBlockDim0 / newBlockShape[0];
@@ -264,21 +288,21 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
     tensorOffsets[1] = add(tensorOffsets[1], sgOffsetN);
 
     for(int i = 0; i < prefetchStage; i++){
-      prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
-            loc, base, tensorShape, tensorStride, 
-            tensorOffsets, newBlockShape, order);
+      // prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
+      //       loc, base, tensorShape, tensorStride, 
+      //       tensorOffsets, newBlockShape, order);
 
-      tensorType = prefetchPtr.getType().cast<triton::PointerType>()
-                      .getPointeeType().cast<RankedTensorType>();
-      auto newType = RankedTensorType::get(tensorType.getShape(),
-                    elemType, newLayout);
-      ptrType = PointerType::get(newType, 1);
-      prefetchPtr.setType(ptrType);
+      // tensorType = prefetchPtr.getType().cast<triton::PointerType>()
+      //                 .getPointeeType().cast<RankedTensorType>();
+      // auto newType = RankedTensorType::get(tensorType.getShape(),
+      //               elemType, newLayout);
+      // ptrType = PointerType::get(newType, 1);
+      // prefetchPtr.setType(ptrType);
 
       tensorOffsets[0] = add(tensorOffsets[0], i32_val(blockShape[0]));
 
-      auto prefetchB = builder.create<triton::LoadOp>(loc, prefetchPtr, 
-              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+      // auto prefetchB = builder.create<triton::LoadOp>(loc, prefetchPtr, 
+      //         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
     }
 
     prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
@@ -299,6 +323,7 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
 }
 
 scf::ForOp Prefetcher::createNewForOp() {
+  dbgInfo("[Prefetch to cahce]createNewForOp");
   OpBuilder builder(forOp);
 
   SmallVector<Value> loopArgs;
@@ -306,10 +331,14 @@ scf::ForOp Prefetcher::createNewForOp() {
     loopArgs.push_back(v);
   }
   for (Value dot : dots) {
-    loopArgs.push_back(
-        operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getA()]);
-    loopArgs.push_back(
-        operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getB()]);
+    if(dot2aPtr.count(dot) == 1){
+      loopArgs.push_back(
+          operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getA()]);
+    }
+    if(dot2bPtr.count(dot) == 1){
+      loopArgs.push_back(
+          operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getB()]);
+    }
   }
 
   auto newForOp = builder.create<scf::ForOp>(
@@ -350,32 +379,36 @@ scf::ForOp Prefetcher::createNewForOp() {
       builder.setInsertionPointAfter(newLoadOp);
       Location loc = newLoadOp->getLoc();
 
-      LoadOp loadOp = dot2aLoad[dotOp];
-      Value aPrefetchPtr = operand2headPrefetch.lookup(dotOp.getA());
-      aPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*aPrefetchPtr.use_begin());
-      auto prefetchA = builder.create<triton::LoadOp>(loc, aPrefetchPtr, 
-              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+      if(dot2aLoad.count(dotOp) > 0){
+        LoadOp loadOp = dot2aLoad[dotOp];
+        Value aPrefetchPtr = operand2headPrefetch.lookup(dotOp.getA());
+        aPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*aPrefetchPtr.use_begin());
+        auto prefetchA = builder.create<triton::LoadOp>(loc, aPrefetchPtr, 
+                loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+        
+        auto retType = aPrefetchPtr.getType();
+        auto dot = dotOp.getODSResults(0)[0];
+        auto advanceOp = dot2aYield[dot].getDefiningOp<triton::AdvanceOp>();
+        SmallVector<Value> aOffset = advanceOp.getOffsets();
+        aAdvancedPtr = builder.create<triton::AdvanceOp>(loc, retType, aPrefetchPtr, aOffset);
+      }
 
-      LoadOp loadBOp = dot2bLoad[dotOp];
-      Value bPrefetchPtr = operand2headPrefetch.lookup(dotOp.getB());
-      bPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*bPrefetchPtr.use_begin());
-      auto prefetchB = builder.create<triton::LoadOp>(loc, bPrefetchPtr, 
-              loadOp.getCache(),loadOp.getEvict(), loadOp.getIsVolatile());
+      if(dot2bLoad.count(dotOp) > 0){
+        LoadOp loadBOp = dot2bLoad[dotOp];
+        Value bPrefetchPtr = operand2headPrefetch.lookup(dotOp.getB());
+        bPrefetchPtr = newForOp.getRegionIterArgForOpOperand(*bPrefetchPtr.use_begin());
+        auto prefetchB = builder.create<triton::LoadOp>(loc, bPrefetchPtr, 
+                loadOp.getCache(),loadOp.getEvict(), loadOp.getIsVolatile());
+
+        auto retType = bPrefetchPtr.getType();
+        auto dot = dotOp.getODSResults(0)[0];
+        auto advanceOp = dot2bYield[dot].getDefiningOp<triton::AdvanceOp>();
+        SmallVector<Value> bOffset = advanceOp.getOffsets();
+        bAdvancedPtr = builder.create<triton::AdvanceOp>(loc, retType, bPrefetchPtr, bOffset);
+        builder.restoreInsertionPoint(insertionPoint);
+      }
 
       newOp = newLoadOp;
-
-      auto retType = aPrefetchPtr.getType();
-      auto dot = dotOp.getODSResults(0)[0];
-      auto advanceOp = dot2aYield[dot].getDefiningOp<triton::AdvanceOp>();
-      SmallVector<Value> aOffset = advanceOp.getOffsets();
-      aAdvancedPtr = builder.create<triton::AdvanceOp>(loc, retType, aPrefetchPtr, aOffset);
-
-      retType = bPrefetchPtr.getType();
-      dot = dotOp.getODSResults(0)[0];
-      advanceOp = dot2bYield[dot].getDefiningOp<triton::AdvanceOp>();
-      SmallVector<Value> bOffset = advanceOp.getOffsets();
-      bAdvancedPtr = builder.create<triton::AdvanceOp>(loc, retType, bPrefetchPtr, bOffset);
-      builder.restoreInsertionPoint(insertionPoint);
     } else{
       newOp = builder.clone(op, mapping);
     }
@@ -390,8 +423,12 @@ scf::ForOp Prefetcher::createNewForOp() {
     yieldValues.push_back(mapping.lookup(v));
   }
   for (Value dot : dots) {
-    yieldValues.push_back(aAdvancedPtr);
-    yieldValues.push_back(bAdvancedPtr);
+    if(dot2aPtr.count(dot) == 1){
+      yieldValues.push_back(aAdvancedPtr);
+    }
+    if(dot2bPtr.count(dot) == 1){
+      yieldValues.push_back(bAdvancedPtr);
+    }
   }
   // Update ops of yield
   builder.create<scf::YieldOp>(yieldOp.getLoc(), yieldValues);
@@ -400,22 +437,23 @@ scf::ForOp Prefetcher::createNewForOp() {
 }
 
 void Prefetcher::emitPrologue() {
+  dbgInfo("[Prefetch to cache]emitPrologue");
   OpBuilder builder(forOp);
 
   for (int i = 0; i < dots.size(); i++) {
     auto dot = dots[i];
     Attribute dotEncoding =
         dot.getType().cast<RankedTensorType>().getEncoding();
-    Attribute dotaEncoding = dotas[i].getType().cast<RankedTensorType>().getEncoding()
-                            .dyn_cast<DotOperandEncodingAttr>().getParent();
-    Attribute dotbEncoding = dotbs[i].getType().cast<RankedTensorType>().getEncoding()
-                            .dyn_cast<DotOperandEncodingAttr>().getParent();
-    Value aPrefetched = generatePrefetch(builder, dot2aPtr[dot], dot2aLoad[dot]);
-    operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getA()] =
-        aPrefetched;
-    Value bPrefetched = generatePrefetch(builder, dot2bPtr[dot], dot2bLoad[dot]);
-    operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getB()] =
-        bPrefetched;
+    if(dot2aPtr.count(dot) == 1){
+      Value aPrefetched = generatePrefetch(builder, dot2aPtr[dot], dot2aLoad[dot]);
+      operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getA()] =
+          aPrefetched;
+    }
+    if(dot2bPtr.count(dot) == 1){
+      Value bPrefetched = generatePrefetch(builder, dot2bPtr[dot], dot2bLoad[dot]);
+      operand2headPrefetch[dot.getDefiningOp<triton::DotOp>().getB()] =
+          bPrefetched;
+    }
   }
 }
 

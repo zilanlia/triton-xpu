@@ -302,7 +302,7 @@ public:
     }
 
     int nElem = desc.size();
-    dbgInfo("nElem", nElem);
+    dbgInfo("[LoadOpToXeGPUPattern]nElem", nElem);
 
     auto descType = desc[0].getType();
     Value desc0 = desc[0];

@@ -553,7 +553,9 @@ class _attention(torch.autograd.Function):
 attention = _attention.apply
 
 
-@pytest.mark.parametrize("Z, H, N_CTX, D_HEAD", [(1, 2, 1024, 64)])
+# @pytest.mark.parametrize("Z, H, N_CTX, D_HEAD", [(1, 2, 1024, 64)])
+@pytest.mark.parametrize("Z, H, N_CTX, D_HEAD", [(8, 16, 1024, 64)])
+# head/seqlen 
 @pytest.mark.parametrize("causal", [True])
 def test_op(Z, H, N_CTX, D_HEAD, causal, dtype=torch.float16):
     torch.manual_seed(20)
@@ -594,8 +596,8 @@ def test_op(Z, H, N_CTX, D_HEAD, causal, dtype=torch.float16):
     # compare
     # assert torch.allclose(ref_out, tri_out, atol=1e-2, rtol=0)
 
-    print(f"ref_out={ref_out}")
-    print(f"tri_out={tri_out}")
+    # print(f"ref_out={ref_out}")
+    # print(f"tri_out={tri_out}")
 
     assert torch.allclose(ref_out, tri_out, atol=1e-2, rtol=0)
     if torch.allclose(ref_out, tri_out, atol=1e-2, rtol=1e-2):
@@ -607,7 +609,7 @@ def test_op(Z, H, N_CTX, D_HEAD, causal, dtype=torch.float16):
     # assert torch.allclose(ref_dk, tri_dk, atol=1e-2, rtol=0)
     # assert torch.allclose(ref_dq, tri_dq, atol=1e-2, rtol=0)
 
-test_op(1, 2, 1024, 64, False)
+test_op(8, 16, 1024, 64, False)
 
 # try:
 #     from flash_attn.flash_attn_interface import \

@@ -205,7 +205,10 @@ TritonGPUToXeGPUTypeConverter::convertTritonTensorType(
       } else if(MmaFlag==1 && elemTy == bf16Type){
         auto newType = mlir::VectorType::get(ArrayRef<int64_t>{dim0 / 2, dim1, 2}, i16Type);
         resultTypes.assign(elemShape[2] * elemShape[3], newType);
-      } 
+      } else if(MmaFlag==3){
+        auto newType = mlir::VectorType::get(ArrayRef<int64_t>{shape[0], shape[1]}, elemTy);
+        resultTypes.assign(1, newType);
+      }
     }else{
       unsigned simd = product_interval<unsigned>(threadShape, 0, threadShape.size() / 2);
       auto newType = mlir::VectorType::get(simd, elemTy);

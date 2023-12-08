@@ -20,6 +20,10 @@
 #define GEN_PASS_CLASSES
 #include "triton/Dialect/XeGPU/Transforms/Passes.h.inc"
 
+#include<vector>
+#include<map>
+#include<set>
+
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::xegpu;
@@ -27,19 +31,211 @@ using namespace mlir::triton::xegpu;
 #define i8_ty builder.getIntegerType(8)
 #define i8_val(value) builder.create<arith::ConstantOp>(loc, i8_ty, builder.getI8IntegerAttr(value))
 
+//only for attention now
+class Tiling {
+  scf::ForOp forOp;
+  scf::YieldOp yieldOp;
+
+  std::vector<std::vector<Operation *>> dpasOps;
+  std::map<xegpu::DpasOp, int> dpasRound;
+  std::map<xegpu::LoadNDOp, int> loadRound;
+  std::map<Operation *, Operation *> dpas2ALoad;
+  std::map<Operation *, Operation *> dpas2BLoad;
+  std::set<Operation *> scheduledOps;
+  std::vector<Operation *> uselessCastOp;
+public:
+  Tiling() = delete;
+
+  Tiling(scf::ForOp forOp) : forOp(forOp) {
+    yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  }
+
+  LogicalResult initialize();
+
+  void scheduleOps();
+};
+
+LogicalResult Tiling::initialize() {
+  Block *loop = forOp.getBody();
+  SmallVector<xegpu::DpasOp> dpasInFor;
+
+  for (Operation &op : *loop){
+    if (auto castOp = dyn_cast<mlir::UnrealizedConversionCastOp>(op)){
+      Value result = castOp.getODSResults(0)[0];
+      auto user = result.getUses();
+      llvm::outs() << "[OptimizedDotOp]castOp result: " << result << "\n";
+      if(user.begin() == user.end()){
+        Operation *cast = castOp.getOperation();
+        uselessCastOp.push_back(cast);
+      }
+    }
+  }
+
+  for(auto castOp : uselessCastOp){
+    castOp->erase();
+  }
+
+
+  for (Operation &op : *loop)
+    if (auto dpasOp = dyn_cast<xegpu::DpasOp>(op))
+      dpasInFor.push_back(dpasOp);
+
+  if (dpasInFor.empty()){
+    llvm::outs() << "[OptimizedDotOp][No dpasOp in For Loop]" << "\n";
+    return failure();
+  }
+
+  for (xegpu::DpasOp dpasOp : dpasInFor) {
+    Value dpasA = dpasOp.getLhs();
+    Value dpasB = dpasOp.getRhs();
+    Value dpasC = dpasOp.getAcc();
+    Operation *dpas = dpasOp.getOperation();
+
+    int round = 0;
+    while(dpasC.getDefiningOp()){
+      if(auto parentDpasOp = dpasC.getDefiningOp<xegpu::DpasOp>()){
+        dpasC = parentDpasOp.getAcc();
+        round++;
+      }else{
+        dpasRound[dpasOp] = round;
+        if(dpasOps.size() <= round){
+          dpasOps.push_back({});
+        }
+        dpasOps[round].push_back(dpas);
+        break;
+      }
+    }
+
+    if(auto loadNDOp = dpasA.getDefiningOp<xegpu::LoadNDOp>()){
+      dpas2ALoad[dpas] = loadNDOp.getOperation();
+      loadRound[loadNDOp] = dpasRound[dpasOp];
+    }
+
+    if(auto loadNDOp = dpasB.getDefiningOp<xegpu::LoadNDOp>()){
+      dpas2BLoad[dpas] = loadNDOp.getOperation();
+      loadRound[loadNDOp] = dpasRound[dpasOp];
+    }
+  }
+
+  return success();
+}
+
+void Tiling::scheduleOps() {
+  int dpasGroupNum = dpasOps[0].size();
+  //for attetion
+  dpasGroupNum /= 2;
+
+  //schedule dpas Ops
+  for(int i = 0; i < dpasOps.size(); i++){
+    for(int j = 1; j < dpasGroupNum; j++){
+      auto dpas0 = dpasOps[i][j];
+      auto dpas1 = dpasOps[i][j - 1];
+      dpas0->moveAfter(dpas1);
+    }
+    for(int j = dpasGroupNum + 1; j < dpasOps[0].size(); j++){
+      auto dpas0 = dpasOps[i][j];
+      auto dpas1 = dpasOps[i][j - 1];
+      dpas0->moveAfter(dpas1);
+    }
+  }
+
+  llvm::outs() << "[OptimizedDotOp][schedule loadNd Ops]" << "\n";
+  //schedule loadNd Ops
+  for(int i = 1; i < dpasOps.size(); i++){
+    Operation* dpas = dpasOps[0][0];
+    bool scheduleA = dpas2ALoad.count(dpas) != 0;
+    bool scheduleB = dpas2BLoad.count(dpas) != 0;
+
+    llvm::outs() << "[OptimizedDotOp]scheduleA: " << scheduleA << "\n";
+    if(scheduleA){
+      dpas = dpasOps[i][0];
+      Operation* load = dpas2ALoad[dpas];
+      load->moveAfter(dpasOps[i - 1][dpasGroupNum - 1]);
+      scheduledOps.insert(load);
+
+      for(int j = 1; j < dpasGroupNum; j++){
+        auto load0 = dpas2ALoad[dpasOps[i][j]];
+        auto load1 = dpas2ALoad[dpasOps[i][j - 1]];
+        if(scheduledOps.count(load0) == 0){
+          load0->moveAfter(load1);
+          scheduledOps.insert(load0);
+        }
+      }
+    }
+
+    llvm::outs() << "[OptimizedDotOp]scheduleB: " << scheduleB << "\n";
+    if(scheduleB){
+      dpas = dpasOps[i][0];
+      Operation* load = dpas2BLoad[dpas];
+      // llvm::outs() << "[OptimizedDotOp]dpas2BLoad[dpas]: " << *dpas2BLoad[dpas] << "\n";
+      // llvm::outs() << "[OptimizedDotOp]dpasOps[i - 1]: " << i - 1 << " dpasGroupNum - 1: " << dpasGroupNum - 1 << "\n";
+      // llvm::outs() << "[OptimizedDotOp]dpasOps[i - 1][dpasGroupNum - 1]: " << *dpasOps[i - 1][dpasGroupNum - 1] << "\n";
+      load->moveAfter(dpasOps[i - 1][dpasGroupNum - 1]);
+      scheduledOps.insert(load);
+
+      for(int j = 1; j < dpasGroupNum; j++){
+        auto load0 = dpas2BLoad[dpasOps[i][j]];
+        auto load1 = dpas2BLoad[dpasOps[i][j - 1]];
+        if(scheduledOps.count(load0) == 0){
+          load0->moveAfter(load1);
+          scheduledOps.insert(load0);
+        }
+      }
+    }
+
+    dpas = dpasOps[0][dpasGroupNum];
+    scheduleA = dpas2ALoad.count(dpas) != 0;
+    scheduleB = dpas2BLoad.count(dpas) != 0;
+
+    llvm::outs() << "[OptimizedDotOp]scheduleA: " << scheduleA << "\n";
+    if(scheduleA){
+      dpas = dpasOps[i][dpasGroupNum];
+      Operation* load = dpas2ALoad[dpas];
+      load->moveAfter(dpasOps[i - 1][dpasOps[0].size() - 1]);
+      scheduledOps.insert(load);
+      for(int j = dpasGroupNum + 1; j < dpasOps[0].size(); j++){
+        auto load0 = dpas2ALoad[dpasOps[i][j]];
+        auto load1 = dpas2ALoad[dpasOps[i][j - 1]];
+        if(scheduledOps.count(load0) != 1){
+          load0->moveAfter(load1);
+          scheduledOps.insert(load0);
+        }
+      }
+    }
+
+    llvm::outs() << "[OptimizedDotOp]scheduleB: " << scheduleB << "\n";
+    if(scheduleB){
+      dpas = dpasOps[i][dpasGroupNum];
+      Operation* load = dpas2BLoad[dpas];
+      load->moveAfter(dpasOps[i - 1][dpasOps[0].size() - 1]);
+      scheduledOps.insert(load);
+      for(int j = dpasGroupNum + 1; j < dpasOps[0].size(); j++){
+        auto load0 = dpas2BLoad[dpasOps[i][j]];
+        auto load1 = dpas2BLoad[dpasOps[i][j - 1]];
+        if(scheduledOps.count(load0) != 1){
+          load0->moveAfter(load1);
+          scheduledOps.insert(load0);
+        }
+      }
+    }
+  }
+  llvm::outs() << "[OptimizedDotOp]forOp: " << forOp << "\n";
+}
+
+
 LogicalResult checkDotOp(scf::ForOp forOp){
   Block *loop = forOp.getBody();
-  SmallVector<xegpu::DpasOp> dotsInFor;
+  SmallVector<xegpu::DpasOp> dpasInFor;
   for (Operation &op : *loop)
-    if (auto dotOp = dyn_cast<xegpu::DpasOp>(op))
-      dotsInFor.push_back(dotOp);
+    if (auto dpasOp = dyn_cast<xegpu::DpasOp>(op))
+      dpasInFor.push_back(dpasOp);
 
-  if (dotsInFor.size() > 1){
+  if (dpasInFor.size() > 1){
     llvm::outs() << "\n\n[OptimizeDotOp][More than 1 dpasOp in For Loop]\n";
     return failure();
   }
 
-  if (dotsInFor.empty()){
+  if (dpasInFor.empty()){
     llvm::outs() << "\n\n[OptimizeDotOp][No dpasOp in For Loop]\n";
     return failure();
   }
@@ -100,13 +296,20 @@ public:
 
   void runOnOperation() override {
     getOperation()->walk([&](scf::ForOp forOp) {
-      if(checkDotOp(forOp).failed()){
+      // if(checkDotOp(forOp).failed()){
+      //   return;
+      // }
+
+      // addSyncBarrierForDot(forOp);
+
+      // addCompilerHintForDot(forOp);
+
+      Tiling tiling(forOp);
+
+      if (tiling.initialize().failed())
         return;
-      }
 
-      addSyncBarrierForDot(forOp);
-
-      addCompilerHintForDot(forOp);
+      tiling.scheduleOps();
     });
   }
 };
