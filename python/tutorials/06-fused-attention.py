@@ -13,6 +13,7 @@ Extra Credits:
 
 import pytest
 import torch
+import time
 
 import triton
 import triton.language as tl
@@ -475,12 +476,12 @@ class _attention(torch.autograd.Function):
         #     num_warps = 8
         #     num_stages = 7 if Lk >= 64 else 3
 
-        print("stage: ", stage)
-        print("Lq, Lk, Lv: ", Lq, Lk, Lv) 
-        print("q_stride: ", q.stride(0), q.stride(1), q.stride(2), q.stride(3))
-        print("k_stride: ", k.stride(0), k.stride(1), k.stride(2), k.stride(3))
-        print("q.shape: ", q.shape[0], q.shape[1], q.shape[2]) 
-        print("k.shape: ", k.shape[2], k.shape[3]) 
+        # print("stage: ", stage)
+        # print("Lq, Lk, Lv: ", Lq, Lk, Lv) 
+        # print("q_stride: ", q.stride(0), q.stride(1), q.stride(2), q.stride(3))
+        # print("k_stride: ", k.stride(0), k.stride(1), k.stride(2), k.stride(3))
+        # print("q.shape: ", q.shape[0], q.shape[1], q.shape[2]) 
+        # print("k.shape: ", k.shape[2], k.shape[3]) 
 
         grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0] * q.shape[1], 1)
         M = torch.empty((q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
@@ -554,9 +555,8 @@ attention = _attention.apply
 
 
 # @pytest.mark.parametrize("Z, H, N_CTX, D_HEAD", [(1, 2, 1024, 64)])
-@pytest.mark.parametrize("Z, H, N_CTX, D_HEAD", [(8, 16, 1024, 64)])
-# head/seqlen 
-@pytest.mark.parametrize("causal", [True])
+# @pytest.mark.parametrize("Z, H, N_CTX, D_HEAD", [(8, 16, 1024, 64)])
+# @pytest.mark.parametrize("causal", [True])
 def test_op(Z, H, N_CTX, D_HEAD, causal, dtype=torch.float16):
     torch.manual_seed(20)
     q = (
@@ -609,8 +609,25 @@ def test_op(Z, H, N_CTX, D_HEAD, causal, dtype=torch.float16):
     # assert torch.allclose(ref_dk, tri_dk, atol=1e-2, rtol=0)
     # assert torch.allclose(ref_dq, tri_dq, atol=1e-2, rtol=0)
 
-test_op(8, 16, 1024, 64, False)
+test_op(8, 16, 4096, 64, False)
 
+perf_test = 1
+
+if perf_test:
+    total_time = 0
+    ops = 5 * 4096 * 4096 * 64 * 8 * 16
+    iter = 10
+    print("[perfermance] test %d itertions", iter)
+    for i in range(0, iter):
+        single_run_start = time.time()
+        test_op(8, 16, 4096, 64, False)
+        single_run_end = time.time()
+        total_time += (single_run_end - single_run_start) * 1000
+        run_time = (single_run_end - single_run_start) * 1000
+
+    end = time.time()
+    print("[perfermance][cpu] 100 itertion  time: ", total_time, " ms", " average time: ", total_time / iter, " gflops: ",  ops / (total_time / iter) / 1000 / 1000)
+    print("\n")
 # try:
 #     from flash_attn.flash_attn_interface import \
 #         flash_attn_qkvpacked_func as flash_attn_func

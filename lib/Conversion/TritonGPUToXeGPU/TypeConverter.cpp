@@ -105,6 +105,7 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
       auto threadShape = genericLayout.getThreadShape();
       auto elemShape = genericLayout.getElemPerThread();
       auto elemStride = genericLayout.getElemStride();
+      auto order = genericLayout.getOrder();
       int dim0 = threadShape[0] * elemShape[0];
       int dim1 = threadShape[1] * elemShape[1];
 
@@ -123,9 +124,11 @@ TritonGPUToXeGPUTypeConverter::convertTritonPointerType(
         numElements = (blockShapeM / loadM) * elemShape[3];
       } else if(mmaFlag == 1){
         int loadK = shape[0];
-        // loadK = std::min(std::max(loadK, dim0), 32);
-        //to do for transpose
-        loadK = dim0;
+        // to do
+        // if(order[0] == 1)
+        //   loadK = std::min(std::max(loadK, dim0), 32);
+        // else
+          loadK = dim0;
         tdescTy = TensorDescType::get({loadK, dim1}, 
                     elemTy, MemoryScopeAttr::get(type.getContext(), MemoryScope::GLOBAL));
         int blockShapeK = elemShape[2] * elemStride[2];

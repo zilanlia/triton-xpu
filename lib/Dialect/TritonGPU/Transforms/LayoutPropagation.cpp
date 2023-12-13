@@ -26,6 +26,7 @@
 
 using namespace mlir;
 using namespace mlir::scf;
+using namespace mlir::triton;
 using ::mlir::triton::gpu::GenericEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 
@@ -108,7 +109,6 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
                         opsGraphTy &preOpsGraph, opsGraphTy &sucOpsGraph, opsSetTy& opsSet){
   while(!opsQueue.empty()){
     auto op = opsQueue.front();
-    //dbgInfo("[propagateLayout]op", *op);
     opsSet.erase(op);
     opsQueue.pop();
 
@@ -159,7 +159,8 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
             }
           }
           else if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
-            if(genericLayout.getMmaFlag() == -1){
+            // if(genericLayout.getMmaFlag() == -1)
+            {
               auto newType = RankedTensorType::get(tensorType.getShape(), 
                     tensorType.getElementType(), encoding);
               if(isPointerType){
@@ -179,7 +180,7 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
         Type type = result.getType();
         bool isPointerType = 0;
         int addr;
-        //dbgInfo("[propagateLayout]type", type);
+        // dbgInfo("[propagateLayout]type", type);
         if(isa<triton::PointerType>(type)){
           addr = type.cast<triton::PointerType>().getAddressSpace();
           type = type.cast<triton::PointerType>().getPointeeType();
@@ -206,7 +207,8 @@ void propagateLayout(MLIRContext *context, opsQueueTy &opsQueue, Attribute &enco
             }
           }
           else if(auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()){
-            if(genericLayout.getMmaFlag() == -1){
+            // if(genericLayout.getMmaFlag() == -1)
+            {
               auto newType = RankedTensorType::get(tensorType.getShape(), 
                     tensorType.getElementType(), encoding);
               if(isPointerType){
@@ -361,6 +363,7 @@ public:
 
     opsVectorTy opsVector;
     opsSetTy opsSet;
+    opsSetTy opsSet1;
     opsGraphTy  preOpsGraph;
     opsGraphTy sucOpsGraph;
 
@@ -375,6 +378,7 @@ public:
             || mlir::isa<triton::FuncOp>(op) || mlir::isa<scf::ForOp>(op))){
         opsVector.push_back(op);
         opsSet.insert(op);
+        opsSet1.insert(op);
       }
     });
 
@@ -453,17 +457,48 @@ public:
       }
     });
 
-    // op->walk([&](Operation *curr) {
-    //   if (auto makeTensorPtrOp = dyn_cast<MakeTernsorPtrOp>(curr)){
-    //     auto order = makeTensorPtrOp.getOrder();
-    //     if(order[0]==0){
-  
-    //     }
-    //   }
-    // });
+    op->walk([&](Operation *curr) {
+      if (auto makeTensorPtrOp = dyn_cast<MakeTensorPtrOp>(curr)){
+        auto order = makeTensorPtrOp.getOrder();
+        dbgInfo("[LayoutPropagation]order[0]: " , order[0]);
+        if(order[0] == 0){
+          auto ptr = makeTensorPtrOp.getODSResults(0)[0];
+          dbgInfo("[LayoutPropagation]ptr: " , ptr);
+          auto encoding = ptr.getType().cast<triton::PointerType>()
+                             .getPointeeType().dyn_cast<RankedTensorType>()
+                             .getEncoding();
+          dbgInfo("[LayoutPropagation]encoding: " , encoding);
+          auto layout = encoding.cast<GenericEncodingAttr>();
+          const std::vector<unsigned int> newOrderVec{0, 1, 0, 1};
+          ArrayRef<unsigned int> newOrder(newOrderVec);
 
-    dbgInfo("[After propagateLayout]tritonGPU IR");
-    op->print(llvm::outs());
+          dbgInfo("[LayoutPropagation]newOrder.size(): " , newOrder.size());
+          auto newEncoding = layout.updateOrder(newOrder);
+          dbgInfo("[LayoutPropagation]newEncoding" , newEncoding);
+
+
+          opsQueueTy queue;
+          queue.push(makeTensorPtrOp);
+
+          propagateLayout(context, queue, newEncoding, preOpsGraph, sucOpsGraph, opsSet1);
+        }
+      }
+    });
+
+    // process forOp
+    op->walk([&](Operation *curr) {
+      if (auto forOp = dyn_cast<scf::ForOp>(curr)){
+        for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
+            auto operand = forOp.getOperands()[i + 3];
+            auto result = forOp.getODSResults(0)[i];
+            auto type = operand.getType();
+            result.setType(type);
+        }
+      }
+    });
+
+    // dbgInfo("[After propagateLayout]tritonGPU IR");
+    // op->print(llvm::outs());
 
     return;
   }

@@ -488,6 +488,12 @@ def GenericEncodingAttr : DistributedEncoding<"GenericEncoding"> {
         return GenericEncodingAttr::get(ctx, getThreadShape(), getThreadStride(), getElemPerThread(), 
                                     getElemStride(), getSubGroupShape(), getOrder(), mmaFlag);
       }
+
+      GenericEncodingAttr updateOrder(ArrayRef<unsigned> order) {
+        MLIRContext *ctx = getContext();
+        return GenericEncodingAttr::get(ctx, getThreadShape(), getThreadStride(), getElemPerThread(), 
+                                    getElemStride(), getSubGroupShape(), order, getMmaFlag());
+      }
   }];
 }
 

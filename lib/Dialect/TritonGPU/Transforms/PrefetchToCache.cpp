@@ -227,7 +227,7 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
   Value prefetchPtr;
 
   //todo
-  int prefetchStage = 1;
+  int prefetchStage = 2;
 
   auto newLayout = layout.updatemmaFlag(3);
 
@@ -288,21 +288,21 @@ Value Prefetcher::generatePrefetch(OpBuilder &builder, Value ptr, LoadOp loadOp)
     tensorOffsets[1] = add(tensorOffsets[1], sgOffsetN);
 
     for(int i = 0; i < prefetchStage; i++){
-      // prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
-      //       loc, base, tensorShape, tensorStride, 
-      //       tensorOffsets, newBlockShape, order);
+      prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
+            loc, base, tensorShape, tensorStride, 
+            tensorOffsets, newBlockShape, order);
 
-      // tensorType = prefetchPtr.getType().cast<triton::PointerType>()
-      //                 .getPointeeType().cast<RankedTensorType>();
-      // auto newType = RankedTensorType::get(tensorType.getShape(),
-      //               elemType, newLayout);
-      // ptrType = PointerType::get(newType, 1);
-      // prefetchPtr.setType(ptrType);
+      tensorType = prefetchPtr.getType().cast<triton::PointerType>()
+                      .getPointeeType().cast<RankedTensorType>();
+      auto newType = RankedTensorType::get(tensorType.getShape(),
+                    elemType, newLayout);
+      ptrType = PointerType::get(newType, 1);
+      prefetchPtr.setType(ptrType);
 
       tensorOffsets[0] = add(tensorOffsets[0], i32_val(blockShape[0]));
 
-      // auto prefetchB = builder.create<triton::LoadOp>(loc, prefetchPtr, 
-      //         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+      auto prefetchB = builder.create<triton::LoadOp>(loc, prefetchPtr, 
+              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
     }
 
     prefetchPtr = builder.create<triton::MakeTensorPtrOp>(
@@ -351,8 +351,8 @@ scf::ForOp Prefetcher::createNewForOp() {
     mapping.map(arg.value(), newForOp.getRegionIterArgs()[arg.index()]);
   mapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
 
-  Value aAdvancedPtr;
-  Value bAdvancedPtr;
+  std::vector<Value> aAdvancedPtr;
+  std::vector<Value> bAdvancedPtr;
 
   for (Operation &op : forOp.getBody()->without_terminator()) {
     Operation *newOp;
@@ -390,7 +390,8 @@ scf::ForOp Prefetcher::createNewForOp() {
         auto dot = dotOp.getODSResults(0)[0];
         auto advanceOp = dot2aYield[dot].getDefiningOp<triton::AdvanceOp>();
         SmallVector<Value> aOffset = advanceOp.getOffsets();
-        aAdvancedPtr = builder.create<triton::AdvanceOp>(loc, retType, aPrefetchPtr, aOffset);
+        auto adaOp = builder.create<triton::AdvanceOp>(loc, retType, aPrefetchPtr, aOffset);
+        aAdvancedPtr.push_back(adaOp);
       }
 
       if(dot2bLoad.count(dotOp) > 0){
@@ -404,7 +405,8 @@ scf::ForOp Prefetcher::createNewForOp() {
         auto dot = dotOp.getODSResults(0)[0];
         auto advanceOp = dot2bYield[dot].getDefiningOp<triton::AdvanceOp>();
         SmallVector<Value> bOffset = advanceOp.getOffsets();
-        bAdvancedPtr = builder.create<triton::AdvanceOp>(loc, retType, bPrefetchPtr, bOffset);
+        auto adaOp = builder.create<triton::AdvanceOp>(loc, retType, bPrefetchPtr, bOffset);
+        bAdvancedPtr.push_back(adaOp);
         builder.restoreInsertionPoint(insertionPoint);
       }
 
@@ -422,12 +424,12 @@ scf::ForOp Prefetcher::createNewForOp() {
   for (Value v : forOp.getBody()->getTerminator()->getOperands()){
     yieldValues.push_back(mapping.lookup(v));
   }
-  for (Value dot : dots) {
-    if(dot2aPtr.count(dot) == 1){
-      yieldValues.push_back(aAdvancedPtr);
+  for(int i = 0;i < dots.size();i++) {
+    if(dot2aPtr.count(dots[i]) == 1){
+      yieldValues.push_back(aAdvancedPtr[i]);
     }
-    if(dot2bPtr.count(dot) == 1){
-      yieldValues.push_back(bAdvancedPtr);
+    if(dot2bPtr.count(dots[i]) == 1){
+      yieldValues.push_back(bAdvancedPtr[i]);
     }
   }
   // Update ops of yield
@@ -479,6 +481,10 @@ public:
       }
 
       forOp->erase();
+
+      // dbgInfo("[Prefetch to cache] After prefetch");
+      // auto module = newForOp.getOperation()->getParentOfType<ModuleOp>();
+      // module.print(llvm::outs());
     });
   }
 };

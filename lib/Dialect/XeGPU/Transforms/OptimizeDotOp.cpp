@@ -63,7 +63,7 @@ LogicalResult Tiling::initialize() {
     if (auto castOp = dyn_cast<mlir::UnrealizedConversionCastOp>(op)){
       Value result = castOp.getODSResults(0)[0];
       auto user = result.getUses();
-      llvm::outs() << "[OptimizedDotOp]castOp result: " << result << "\n";
+      // llvm::outs() << "[OptimizedDotOp]castOp result: " << result << "\n";
       if(user.begin() == user.end()){
         Operation *cast = castOp.getOperation();
         uselessCastOp.push_back(cast);
@@ -74,7 +74,6 @@ LogicalResult Tiling::initialize() {
   for(auto castOp : uselessCastOp){
     castOp->erase();
   }
-
 
   for (Operation &op : *loop)
     if (auto dpasOp = dyn_cast<xegpu::DpasOp>(op))
@@ -121,9 +120,9 @@ LogicalResult Tiling::initialize() {
 }
 
 void Tiling::scheduleOps() {
-  int dpasGroupNum = dpasOps[0].size();
+  int dpasGroupNum = dpasOps[0].size() / 2;
   //for attetion
-  dpasGroupNum /= 2;
+  // int dpasGroupNum = 8;
 
   //schedule dpas Ops
   for(int i = 0; i < dpasOps.size(); i++){
@@ -139,19 +138,21 @@ void Tiling::scheduleOps() {
     }
   }
 
-  llvm::outs() << "[OptimizedDotOp][schedule loadNd Ops]" << "\n";
+  // llvm::outs() << "[OptimizedDotOp][schedule loadNd Ops]" << "\n";
   //schedule loadNd Ops
   for(int i = 1; i < dpasOps.size(); i++){
     Operation* dpas = dpasOps[0][0];
     bool scheduleA = dpas2ALoad.count(dpas) != 0;
     bool scheduleB = dpas2BLoad.count(dpas) != 0;
 
-    llvm::outs() << "[OptimizedDotOp]scheduleA: " << scheduleA << "\n";
+    // llvm::outs() << "[OptimizedDotOp]scheduleA: " << scheduleA << "\n";
     if(scheduleA){
       dpas = dpasOps[i][0];
       Operation* load = dpas2ALoad[dpas];
       load->moveAfter(dpasOps[i - 1][dpasGroupNum - 1]);
       scheduledOps.insert(load);
+
+      // builder.setInsertionPointAfter(dpasOps[i - 1][dpasGroupNum - 1]);
 
       for(int j = 1; j < dpasGroupNum; j++){
         auto load0 = dpas2ALoad[dpasOps[i][j]];
@@ -163,7 +164,7 @@ void Tiling::scheduleOps() {
       }
     }
 
-    llvm::outs() << "[OptimizedDotOp]scheduleB: " << scheduleB << "\n";
+    // llvm::outs() << "[OptimizedDotOp]scheduleB: " << scheduleB << "\n";
     if(scheduleB){
       dpas = dpasOps[i][0];
       Operation* load = dpas2BLoad[dpas];
@@ -187,7 +188,7 @@ void Tiling::scheduleOps() {
     scheduleA = dpas2ALoad.count(dpas) != 0;
     scheduleB = dpas2BLoad.count(dpas) != 0;
 
-    llvm::outs() << "[OptimizedDotOp]scheduleA: " << scheduleA << "\n";
+    // llvm::outs() << "[OptimizedDotOp]scheduleA: " << scheduleA << "\n";
     if(scheduleA){
       dpas = dpasOps[i][dpasGroupNum];
       Operation* load = dpas2ALoad[dpas];
@@ -203,7 +204,7 @@ void Tiling::scheduleOps() {
       }
     }
 
-    llvm::outs() << "[OptimizedDotOp]scheduleB: " << scheduleB << "\n";
+    // llvm::outs() << "[OptimizedDotOp]scheduleB: " << scheduleB << "\n";
     if(scheduleB){
       dpas = dpasOps[i][dpasGroupNum];
       Operation* load = dpas2BLoad[dpas];
@@ -219,7 +220,7 @@ void Tiling::scheduleOps() {
       }
     }
   }
-  llvm::outs() << "[OptimizedDotOp]forOp: " << forOp << "\n";
+  // llvm::outs() << "[OptimizedDotOp]forOp: " << forOp << "\n";
 }
 
 
@@ -251,14 +252,14 @@ void addSyncBarrierForDot(scf::ForOp forOp){
   Block *loop = forOp.getBody();
 
   auto op = (*loop).begin();
-  llvm::outs()<<"\n\n[OptimizeDotOp]op: "<<*op<<"\n";
+  // llvm::outs()<<"\n\n[OptimizeDotOp]op: "<<*op<<"\n";
 
   builder.setInsertionPoint(forOp);
   auto i32Type =  mlir::IntegerType::get(context, 32);
   auto v8i32Type = mlir::VectorType::get(8, i32Type);
   auto payload = builder.create<xegpu::CreateNbarrierOp>(loc, v8i32Type, i8_val(1), i8_val(0), 
-                                                      ::mlir::IntegerAttr::get(mlir::IntegerType::get(context, 8), 32), 
-                                                      ::mlir::IntegerAttr::get(mlir::IntegerType::get(context, 8), 32));
+                            ::mlir::IntegerAttr::get(mlir::IntegerType::get(context, 8), 8),  //8 is the subgroup size
+                            ::mlir::IntegerAttr::get(mlir::IntegerType::get(context, 8), 8));
 
   builder.setInsertionPointToStart(forOp.getBody());
   builder.create<xegpu::NbarrierArriveOp>(loc, payload);
@@ -287,6 +288,34 @@ void addCompilerHintForDot(scf::ForOp forOp){
       it++;
     }
   }
+
+  for(auto it = (*loop).begin();it != (*loop).end();){
+    if(isa<xegpu::LoadNDOp>(*it)){
+      it++;
+      if(isa<xegpu::DpasOp>(*(it))){
+        xegpu::DpasOp op = dyn_cast<DpasOp>(*it);
+        builder.setInsertionPoint(op);
+        builder.create<xegpu::CompilerHintOp>(loc);
+        it++;
+      }
+    }else{
+      it++;
+    }
+  }
+
+  for(auto it = (*loop).begin();it != (*loop).end();){
+    if(isa<xegpu::DpasOp>(*it)){
+      it++;
+      if(isa<xegpu::LoadNDOp>(*(it))){
+        xegpu::LoadNDOp op = dyn_cast<LoadNDOp>(*it);
+        builder.setInsertionPoint(op);
+        builder.create<xegpu::CompilerHintOp>(loc);
+        it++;
+      }
+    }else{
+      it++;
+    }
+  }
 }
 
 class XeGPUOptimizeDotOpPass
@@ -300,16 +329,16 @@ public:
       //   return;
       // }
 
-      // addSyncBarrierForDot(forOp);
-
-      // addCompilerHintForDot(forOp);
-
       Tiling tiling(forOp);
 
       if (tiling.initialize().failed())
         return;
 
       tiling.scheduleOps();
+
+      addCompilerHintForDot(forOp);
+
+      addSyncBarrierForDot(forOp);
     });
   }
 };

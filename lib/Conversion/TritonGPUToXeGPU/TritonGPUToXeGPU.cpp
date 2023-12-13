@@ -292,6 +292,7 @@ public:
     auto mmaFlag = layout.getMmaFlag();
     auto threadShape = layout.getThreadShape();
     auto elemShape = layout.getElemPerThread();
+    auto order = layout.getOrder();
 
     auto xegpuPtr = adaptor.getPtr();
     ValueRange desc(xegpuPtr);
@@ -366,9 +367,10 @@ public:
         loadType = VectorType::get(ArrayRef<int64_t>{loadM, dim1 / 2, 2}, elemType);
       } else if(mmaFlag == 1) {
         int loadK = shape[0];
-        loadK = std::min(std::max(loadK, dim0), 32);
-        //todo
-        loadK = dim0;
+        // if(order[0] == 1)
+        //   loadK = std::min(std::max(loadK, dim0), 32);
+        // else
+          loadK = dim0;
         if(isTrans){
           loadType = VectorType::get(ArrayRef<int64_t>{dim1, dim0, 1}, elemType);
         }else{
@@ -1036,6 +1038,11 @@ public:
         tensorDescType = TensorDescType::get(context, ::llvm::ArrayRef<int64_t>{blockShape[0], blockShape[1]}, elemType, 
                                                       MemoryScopeAttr::get(context, MemoryScope::GLOBAL));
         //dbgInfo("[MakeTensorPtrOp] Prefetch tensorDescType: "<<tensorDescType<<"");
+        // if(isTrans){
+        //   curNdOffset[0] = NdOffset[1].dyn_cast<mlir::Value>();
+        //   curNdOffset[1] = NdOffset[0].dyn_cast<mlir::Value>();
+        // }
+
         descOp = rewriter.create<xegpu::CreateNdDescOp>(loc, tensorDescType, addr,
                     curNdOffset, NdShape, NdStride, NdOrder, 
                     triton::xegpu::MemoryScope::GLOBAL, true);
@@ -1105,7 +1112,7 @@ public:
     Location loc = op->getLoc();
     auto context = op.getContext();
 
-    auto instBrrier = rewriter.create<xegpu::CompilerHintOp>(loc);
+    // auto instBrrier = rewriter.create<xegpu::CompilerHintOp>(loc);
 
     Value matAValue = adaptor.getA();
     Value matBValue = adaptor.getB();
@@ -1254,7 +1261,7 @@ public:
           uint64_t offset = j * bLoadSize;
           std::iota(bIndices.begin(), bIndices.end(), offset);
           Value slice;
-          if(bCombinedLoadNum!=1)
+          if(bCombinedLoadNum != 1)
             slice = rewriter.create<spirv::VectorShuffleOp>(loc, bDpasType, 
                     matBRange[blockIdx], matBRange[blockIdx], rewriter.getI32ArrayAttr(bIndices));
           else
@@ -1281,7 +1288,7 @@ public:
       }
     }
 
-    instBrrier = rewriter.create<xegpu::CompilerHintOp>(loc);
+    // instBrrier = rewriter.create<xegpu::CompilerHintOp>(loc);
 
     ValueRange newResults(results);
     auto resultTys = op->getResultTypes();

@@ -872,8 +872,6 @@ mlir::LogicalResult DpasOp::verify() {
           {"vnni_axis", "transpose", "l1_hint", "l2_hint", "l3_hint"}))
     return mlir::failure();
 
-  llvm::outs() << "\n\nparseOptionalAttrDict: "<<"\n";
-
   if (parser.parseColon())
     return ::mlir::failure();
 
