@@ -576,6 +576,7 @@ def compile(fn, **kwargs):
         so_path = make_stub(name, signature, constants, ids, enable_warp_specialization=enable_warp_specialization)
     else:
         so_path = _device_backend.make_launcher_stub(name, signature, constants, ids)
+        print("so_path: ", so_path)
     # write-back metadata, if it didn't come from the cache
     if metadata_path is None:
         metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename, binary=False)
@@ -584,7 +585,7 @@ def compile(fn, **kwargs):
     # return handle to compiled kernel
     return CompiledKernel(fn, so_path, metadata, asm)
 
-
+import inspect
 class CompiledKernel:
 
     # Hooks for external tools to monitor the execution of triton kernels
@@ -595,7 +596,8 @@ class CompiledKernel:
     def __init__(self, fn, so_path, metadata, asm):
         # initialize launcher
         import importlib.util
-        spec = importlib.util.spec_from_file_location("__triton_launcher", so_path)
+        # spec = importlib.util.spec_from_file_location("__triton_launcher", so_path)
+        spec = importlib.util.spec_from_file_location("__triton_l0_launcher", so_path)
         mod = importlib.util.module_from_spec(spec)
         self.fn = fn
         spec.loader.exec_module(mod)
