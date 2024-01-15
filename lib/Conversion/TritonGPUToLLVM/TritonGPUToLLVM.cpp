@@ -394,17 +394,22 @@ struct GetProgramIdOpConversion
     // decide the semantic of GetProgramIdOp. If numCTAs = 1, then
     // GetProgramIdOp is converted to "%ctaid", otherwise it is converted to
     // "%clusterid".
-    auto moduleOp = op->getParentOfType<ModuleOp>();
-    assert(moduleOp && "Parent ModuleOp not found for GetProgramIdOp");
-    int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(moduleOp);
+    // auto moduleOp = op->getParentOfType<ModuleOp>();
+    // assert(moduleOp && "Parent ModuleOp not found for GetProgramIdOp");
+    // int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(moduleOp);
 
     Location loc = op->getLoc();
-    assert(op.getAxisAsInt() < 3);
-    std::string sreg = numCTAs == 1 ? "%ctaid." : "%clusterid.";
-    sreg.append(1, 'x' + op.getAxisAsInt()); // 0 -> 'x', 1 -> 'y', 2 -> 'z'
+    // assert(op.getAxisAsInt() < 3);
+    // std::string sreg = numCTAs == 1 ? "%ctaid." : "%clusterid.";
+    // sreg.append(1, 'x' + op.getAxisAsInt()); // 0 -> 'x', 1 -> 'y', 2 -> 'z'
 
-    Value programId = getSRegValue(rewriter, loc, sreg);
-    rewriter.replaceOp(op, programId);
+    // Value programId = getSRegValue(rewriter, loc, sreg);
+    // rewriter.replaceOp(op, programId);
+
+    ::llvm::StringRef funcName = "llvm.pisa.groupid.x";
+    Value gid = rewriter.create<LLVM::CallIntrinsicOp>(loc, i32_ty, funcName, ::mlir::ValueRange{}).getResults()[0];
+    rewriter.replaceOp(op, gid);
+
     return success();
   }
 };

@@ -432,18 +432,18 @@ translateTritonGPUToLLVMIR(llvm::LLVMContext *llvmContext,
     llvm::errs() << "failed to apply pass manager CL options\n";
     return nullptr;
   }
-  auto printingFlags = mlir::OpPrintingFlags();
-  printingFlags.elideLargeElementsAttrs(16);
-  printingFlags.enableDebugInfo();
-  pm.enableIRPrinting(
-      /*shouldPrintBeforePass=*/nullptr,
-      /*shouldPrintAfterPass=*/
-      [](mlir::Pass *pass, mlir::Operation *) {
-        return ::triton::tools::getBoolEnv("MLIR_ENABLE_DUMP");
-      },
-      /*printModuleScope=*/false,
-      /*printAfterOnlyOnChange=*/true,
-      /*printAfterOnlyOnFailure*/ false, llvm::dbgs(), printingFlags);
+  // auto printingFlags = mlir::OpPrintingFlags();
+  // printingFlags.elideLargeElementsAttrs(16);
+  // printingFlags.enableDebugInfo();
+  // pm.enableIRPrinting(
+  //     /*shouldPrintBeforePass=*/nullptr,
+  //     /*shouldPrintAfterPass=*/
+  //     [](mlir::Pass *pass, mlir::Operation *) {
+  //       return ::triton::tools::getBoolEnv("MLIR_ENABLE_DUMP");
+  //     },
+  //     /*printModuleScope=*/false,
+  //     /*printAfterOnlyOnChange=*/true,
+  //     /*printAfterOnlyOnFailure*/ false, llvm::dbgs(), printingFlags);
 
   pm.addPass(mlir::createConvertSCFToCFPass());
   pm.addPass(mlir::createConvertIndexToLLVMPass());
@@ -455,20 +455,24 @@ translateTritonGPUToLLVMIR(llvm::LLVMContext *llvmContext,
   // Simplify the IR
   pm.addPass(mlir::createCSEPass());
   pm.addPass(mlir::createSymbolDCEPass());
-  if (!::triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO"))
-    pm.addPass(mlir::createLLVMDIScopePass());
+  // if (!::triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO"))
+  //   pm.addPass(mlir::createLLVMDIScopePass());
 
   if (failed(pm.run(module))) {
     llvm::errs() << "Pass execution failed";
     return nullptr;
   }
 
+  llvm::outs() << "\n\ntranslateLLVMToLLVMIR\n";
+  module.print(llvm::outs());
   auto llvmIR = translateLLVMToLLVMIR(llvmContext, module, target);
   if (!llvmIR) {
     llvm::errs() << "Translate to LLVM IR failed";
     return nullptr;
   }
 
+  llvm::outs() << "\n\nAfter translateLLVMToLLVMIR\n";
+  // llvmIR.print(llvm::outs());
   if (::triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
     std::string mod_string;
     std::unique_ptr<llvm::raw_string_ostream> ir_ss(

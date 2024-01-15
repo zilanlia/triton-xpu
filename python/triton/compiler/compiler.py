@@ -405,6 +405,12 @@ def compile(fn, **kwargs):
         add_cuda_stages(arch, extern_libs, stages)
     elif device_type == "hip":
         _device_backend.add_stages(arch, extern_libs, stages, num_warps=num_warps, num_stages=num_stages)
+    elif device_type == "xpu":
+        # pass the user's configuration to the backend device.
+        arch["num_warps"] = num_warps
+        arch["num_stages"] = num_stages
+        arch["num_ctas"] = num_ctas
+        _device_backend.add_stages(arch, extern_libs, stages, tma_infos)
     else:
         # pass the user's configuration to the backend device.
         arch["num_warps"] = num_warps
@@ -550,6 +556,9 @@ def compile(fn, **kwargs):
         if not is_cuda and not is_hip():
             _device_backend.add_meta_info(ir_name, module, next_module, metadata, asm)
         module = next_module
+        
+        print(ir_name)
+        print(module)
 
     ids_of_folded_args = tuple([int(k) for k in configs[0].ids_of_folded_args]) if isinstance(fn, JITFunction) else ()
     if "clusterDims" not in metadata:

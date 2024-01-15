@@ -244,9 +244,13 @@ public:
   // Returns CTA level thread idx
   Value getThreadIdInCTA(ConversionPatternRewriter &rewriter,
                          Location loc) const {
-    Value tid = rewriter.create<::mlir::gpu::ThreadIdOp>(
-        loc, ::mlir::gpu::Dimension::x);
-    return rewriter.create<arith::IndexCastOp>(loc, i32_ty, tid);
+    // Value tid = rewriter.create<::mlir::gpu::ThreadIdOp>(
+    //     loc, ::mlir::gpu::Dimension::x);
+    // return rewriter.create<arith::IndexCastOp>(loc, i32_ty, tid);
+    ::llvm::StringRef funcName = "llvm.pisa.localid.x";
+    Value tid = rewriter.create<LLVM::CallIntrinsicOp>(loc, i16_ty, funcName, ::mlir::ValueRange{}).getResults()[0];
+    tid = zext(i32_ty, tid);
+    return tid;
   }
 
   // Returns CTA level thread idx for not ws mode.

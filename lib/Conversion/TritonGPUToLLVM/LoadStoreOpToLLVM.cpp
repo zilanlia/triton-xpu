@@ -242,29 +242,46 @@ struct LoadOpConversion
       // auto asmDialectAttr =
       // LLVM::AsmDialectAttr::get(rewriter.getContext(),
       //                                                 LLVM::AsmDialect::AD_ATT);
-      Value ret = ptxBuilder.launch(rewriter, loc, retTy);
+      // Value ret = ptxBuilder.launch(rewriter, loc, retTy);
+
+      Type retType = mlir::VectorType::get(retTys.size(), valueElemTy);
+      auto pType = LLVM::LLVMPointerType::get(retType, 1);
+      Value newPtr = rewriter.create<LLVM::BitcastOp>(loc, pType, ptrElems[vecStart]);
+      Value ret = load(retType, newPtr);
+      llvm::outs() << "\n\nret: " << ret <<"\n";
 
       // Extract and store return values
       SmallVector<Value> rets;
+      llvm::outs() << "\n\nnWords: " << nWords <<"\n";
+      llvm::outs() << "\n\nvec: " << vec <<"\n";
+      llvm::outs() << "\n\nretTy: " << retTy <<"\n";
       for (unsigned int ii = 0; ii < nWords; ++ii) {
         Value curr;
         if (retTy.isa<LLVM::LLVMStructType>()) {
-          curr = extract_val(IntegerType::get(getContext(), width), ret, ii);
+          // curr = extract_val(IntegerType::get(getContext(), width), ret, ii);
+          curr = extract_element(valueElemTy, ret, i32_val(ii));
+          // curr = bitcast(curr, valueElemTy);
         } else {
           curr = ret;
+          //curr = extract_element(IntegerType::get(getContext(), width), ret, i32_val(ii));
         }
-        curr = bitcast(curr, LLVM::getFixedVectorType(valueElemTy,
-                                                      width / valueElemNBits));
+        // curr = bitcast(curr, LLVM::getFixedVectorType(valueElemTy,
+        //                                               width / valueElemNBits));
+        llvm::outs() << "\n\ncurr: " << curr <<"\n";
         rets.push_back(curr);
       }
       int tmp = width / valueElemNBits;
+      llvm::outs() << "\n\ntmp: " << tmp <<"\n";
       for (size_t ii = 0; ii < vec; ++ii) {
         Value vecIdx = createIndexAttrConstant(
             rewriter, loc, this->getTypeConverter()->getIndexType(), ii % tmp);
-        Value loaded = extract_element(valueElemTy, rets[ii / tmp], vecIdx);
+        //Value loaded = extract_element(valueElemTy, rets[ii / tmp], vecIdx);
+        Value loaded = rets[ii / tmp];
         loadedVals.push_back(loaded);
       }
     } // end vec
+
+    llvm::outs() << "\n\nloadedVals.size(): " << loadedVals.size() <<"\n";
 
     Type llvmResultStructTy = getTypeConverter()->convertType(valueTy);
     Value resultStruct = getTypeConverter()->packLLElements(
@@ -348,6 +365,10 @@ struct StoreOpConversion
       auto wordTy = vec_ty(valueElemTy, wordNElems);
 
       SmallVector<std::pair<Value, std::string>> asmArgs;
+
+      Type retElemType = mlir::VectorType::get(nWords, valueElemTy);
+      Value retElems = undef(retElemType);
+      
       for (size_t wordIdx = 0; wordIdx < nWords; ++wordIdx) {
         // llWord is a width-len composition
         Value llWord = undef(wordTy);
@@ -363,6 +384,10 @@ struct StoreOpConversion
           llWord = insert_element(wordTy, llWord, elem, i32_val(elemIdx));
         }
         llWord = bitcast(llWord, valArgTy);
+        Value elem = valueElems[wordIdx];
+        // elem = bitcast(elem, valArgTy);
+        llvm::outs() << "\n\nwordNElems: " <<wordNElems<<"\n";
+        retElems = insert_element(retElemType, retElems, elem, i32_val(wordIdx));
         std::string constraint =
             (width == 64) ? "l" : ((width == 32) ? "r" : "c");
         asmArgs.emplace_back(llWord, constraint);
@@ -398,7 +423,13 @@ struct StoreOpConversion
 
       auto asmReturnTy = void_ty(ctx);
 
-      ptxBuilder.launch(rewriter, loc, asmReturnTy);
+      // ptxBuilder.launch(rewriter, loc, asmReturnTy);
+
+      Type retType = mlir::VectorType::get(nWords, valueElemTy);
+      auto pType = LLVM::LLVMPointerType::get(retType, 1);
+      Value newPtr = rewriter.create<LLVM::BitcastOp>(loc, pType, ptrElems[vecStart]);
+
+      store(retElems, newPtr);
     }
     rewriter.eraseOp(op);
     return success();
