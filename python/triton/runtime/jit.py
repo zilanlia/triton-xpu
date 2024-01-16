@@ -401,6 +401,7 @@ class JITFunction(KernelInterface[T]):
                 key = (key, tuple(extern_libs.items()))
 
             bin = self.cache[device].get(key, None)
+            # bin = None  # no cache, only for develop
             if bin is not None:
                 # build dict of constant values
                 args = regular_args_v(args_proxy)

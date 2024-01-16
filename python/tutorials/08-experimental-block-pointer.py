@@ -91,21 +91,22 @@ Note that this feature is still experimental and may change in the future.
 # ------------
 
 import torch
+import time
 
 import triton
 import triton.language as tl
-
+import intel_extension_for_pytorch
 
 @triton.autotune(
     configs=[
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
-        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
+        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=4, num_warps=4),
+        # triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 1}, num_stages=5, num_warps=2),
     ],
     key=['M', 'N', 'K'],
 )
@@ -133,14 +134,18 @@ def matmul_kernel_with_block_pointers(
     # This is done in a grouped ordering to promote L2 data reuse.
     # See the matrix multiplication tutorial for details.
     pid = tl.program_id(axis=0)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id = pid // num_pid_in_group
-    first_pid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + (pid % group_size_m)
-    pid_n = (pid % num_pid_in_group) // group_size_m
+    # num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    pid = pid.to(tl.uint32)
+    num_pid_n = num_pid_n.to(tl.uint32)
+    pid_m = pid // num_pid_n
+    pid_n = pid % num_pid_n
+    # num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    # group_id = pid // num_pid_in_group
+    # first_pid_m = group_id * GROUP_SIZE_M
+    # group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    # pid_m = first_pid_m + (pid % group_size_m)
+    # pid_n = (pid % num_pid_in_group) // group_size_m
 
     # ----------------------------------------------------------
     # Create block pointers for the first blocks of A and B.
@@ -167,12 +172,13 @@ def matmul_kernel_with_block_pointers(
         # See above `Load/Store a Block Pointer` section for details.
         a = tl.load(a_block_ptr, boundary_check=(0, 1))
         b = tl.load(b_block_ptr, boundary_check=(0, 1))
-        # We accumulate along the K dimension.
-        accumulator += tl.dot(a, b)
         # Advance the block pointer to the next K block.
         # See above `Advance a Block Pointer` section for details.
         a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_SIZE_K))
         b_block_ptr = tl.advance(b_block_ptr, (BLOCK_SIZE_K, 0))
+        # We accumulate along the K dimension.
+        accumulator += tl.dot(a, b)
+
     c = accumulator.to(tl.float16)
 
     # ----------------------------------------------------------------
@@ -194,7 +200,7 @@ def matmul(a, b):
     M, K = a.shape
     K, N = b.shape
     # Allocates output.
-    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+    c = torch.empty((M, N), device=a.device, dtype=torch.float16)
     # 1D launch kernel where each block gets its own program.
     grid = lambda META: (
         triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
@@ -216,13 +222,87 @@ def matmul(a, b):
 # Still we can test our matrix multiplication with block pointers against a native torch implementation (i.e., cuBLAS).
 
 torch.manual_seed(0)
-a = torch.randn((512, 512), device='cuda', dtype=torch.float16)
-b = torch.randn((512, 512), device='cuda', dtype=torch.float16)
+a = torch.randn((4096, 4096), device='xpu', dtype=torch.float16)
+b = torch.randn((4096, 4096), device='xpu', dtype=torch.float16)
+
+# a = torch.ones((4096, 4096), device='xpu', dtype=torch.float16)
+# b = torch.ones((4096, 4096), device='xpu', dtype=torch.float16)
+
 triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
+
+# triton_output = triton_output.half()
+
 print(f"triton_output={triton_output}")
 print(f"torch_output={torch_output}")
-if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
+
+# cnt = 0
+# for i in range(0, 1024):
+#     if cnt > 32:
+#         break
+#     for j in range(0, 1024):
+#         if not triton_output[i, j] == torch_output[i, j]:
+#             cnt = cnt + 1
+#             if cnt > 32:
+#                 break
+#             print(i, j, triton_output[i, j], torch_output[i, j])
+
+if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=1e-2):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")
+
+M = 4096
+N = 4096
+K = 4096 
+
+perf_test = 0
+
+if perf_test:
+    a = torch.randn((M, K), device='xpu', dtype=torch.float16)
+    b = torch.randn((K, N), device='xpu', dtype=torch.float16)
+    single_run_start = time.time()
+    triton_output = matmul(a, b)
+    single_run_end = time.time()
+    print("[perfermance] warp up take time: ", (single_run_end - single_run_start) * 1000, " ms")
+
+    ops = 2 * M * N * K
+    iter = 100
+    print("[perfermance] test %d itertions", iter)
+
+    test_torch_mutmal = 0
+    if test_torch_mutmal:
+        print("[perfermance] torch.matmul")
+        start = time.time()
+        total_time = 0
+        for i in range(0, iter):
+            a = torch.randn((M, K), device='xpu', dtype=torch.float16)
+            b = torch.randn((K, N), device='xpu', dtype=torch.float16)
+            single_run_start = time.time()
+            triton_output = torch.matmul(a, b)
+            # print(f"triton_output={triton_output[0]}")
+            single_run_end = time.time()
+            total_time += (single_run_end - single_run_start) * 1000
+            run_time = (single_run_end - single_run_start) * 1000
+            print("[perfermance] itertion: ", i)
+            print("[perfermance][cpu] time: ", run_time, " ms", " gflops: ", ops / run_time / 1000 / 1000)
+
+        end = time.time()
+        print("[perfermance] torch.matmul 100 itertion take time: ", total_time, " ms", " average time: ", total_time / iter, " gflops: ",  ops / (total_time / iter) / 1000 / 1000)
+
+
+    print("[perfermance] triton matmul ")
+    start = time.time()
+    total_time = 0
+    for i in range(0, iter):
+        a = torch.randn((M, K), device='xpu', dtype=torch.float16)
+        b = torch.randn((K, N), device='xpu', dtype=torch.float16)
+        single_run_start = time.time()
+        triton_output = matmul(a, b)
+        single_run_end = time.time()
+        total_time += (single_run_end - single_run_start) * 1000
+        run_time = (single_run_end - single_run_start) * 1000
+
+    end = time.time()
+    print("[perfermance][cpu] 100 itertion  time: ", total_time, " ms", " average time: ", total_time / iter, " gflops: ",  ops / (total_time / iter) / 1000 / 1000)
+    print("\n")

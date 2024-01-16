@@ -87,7 +87,10 @@ def TT_Tensor : AnyTypeOf<[TT_FpIntTensor, TT_PtrTensor]>;
 // Pointer Type to Tensor Type: `ptr<tensor<>>`
 def TT_TensorPtr : TT_PtrOf<[TT_Tensor]>;
 
+def TT_ScalarType: AnyTypeOf<[TT_Int, TT_Float]>;
+def TT_VectorType: VectorOfRankAndType<[1,2,3], [TT_ScalarType]>;
+
 // Any Type in Triton IR
-def TT_Type : AnyTypeOf<[TT_FloatLike, TT_IntLike, TT_PtrLike, TT_TensorPtr]>;
+def TT_Type : AnyTypeOf<[TT_FloatLike, TT_IntLike, TT_PtrLike, TT_TensorPtr, TT_VectorType]>;
 
 #endif

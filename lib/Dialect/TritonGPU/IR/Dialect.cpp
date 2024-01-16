@@ -41,6 +41,9 @@ unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
                                 Type eltTy) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     return blockedLayout.getTotalElemsPerThread(shape, eltTy);
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    //todo
+    return 1;
   } else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>()) {
     return sliceLayout.getTotalElemsPerThread(shape, eltTy);
   } else if (auto mmaLayout = layout.dyn_cast<MmaEncodingAttr>()) {
@@ -187,6 +190,15 @@ SmallVector<unsigned> getSizePerThread(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     return SmallVector<unsigned>(blockedLayout.getSizePerThread().begin(),
                                  blockedLayout.getSizePerThread().end());
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    SmallVector<unsigned> ret = SmallVector<unsigned>(genericLayout.getElemPerThread().begin(),
+                                                      genericLayout.getElemPerThread().end());
+    //todo
+    llvm::outs()<<"\n\nret.size():"<<ret.size()<<"\n";
+    for(int i=0;i<ret.size();i++)
+      ret[i] = 1;
+ 
+    return ret;
   } else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>()) {
     auto sizePerThread = getSizePerThread(sliceLayout.getParent());
     sizePerThread.erase(sizePerThread.begin() + sliceLayout.getDim());
@@ -258,6 +270,7 @@ SmallVector<unsigned> getUniqueContigPerThread(Attribute layout,
   auto rank = shape.size();
   SmallVector<unsigned> ret(rank);
   auto contigPerThread = getContigPerThread(layout);
+
   assert(contigPerThread.size() == rank && "Unexpected contigPerThread size");
   for (int d = 0; d < rank; ++d) {
     ret[d] = std::min<unsigned>(shape[d], contigPerThread[d]);
@@ -364,6 +377,9 @@ SmallVector<unsigned> getOrder(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     return SmallVector<unsigned>(blockedLayout.getOrder().begin(),
                                  blockedLayout.getOrder().end());
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    return SmallVector<unsigned>(genericLayout.getOrder().begin(),
+                                 genericLayout.getOrder().end());
   } else if (auto mmaLayout = layout.dyn_cast<MmaEncodingAttr>()) {
     return {1, 0};
   } else if (auto dotLayout = layout.dyn_cast<DotOperandEncodingAttr>()) {
@@ -393,6 +409,10 @@ SmallVector<unsigned> getOrder(Attribute layout) {
 CTALayoutAttr getCTALayout(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>())
     return blockedLayout.getCTALayout();
+  else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) //todo
+    return CTALayoutAttr::get(layout.getContext(), genericLayout.getSubGroupShape(),
+                              genericLayout.getSubGroupShape(),
+                              genericLayout.getOrder());
   else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>())
     return CTALayoutAttr::get(layout.getContext(), getCTAsPerCGA(sliceLayout),
                               getCTASplitNum(sliceLayout),
@@ -452,6 +472,10 @@ SmallVector<unsigned> getCTASplitNum(Attribute layout) {
   if (auto blockedLayout = layout.dyn_cast<BlockedEncodingAttr>()) {
     res.assign(blockedLayout.getCTALayout().getCTASplitNum().begin(),
                blockedLayout.getCTALayout().getCTASplitNum().end());
+  } else if (auto genericLayout = layout.dyn_cast<GenericEncodingAttr>()) {
+    //todo
+    res.assign(genericLayout.getSubGroupShape().begin(),
+               genericLayout.getSubGroupShape().end());
   } else if (auto sliceLayout = layout.dyn_cast<SliceEncodingAttr>()) {
     res = getCTASplitNum(sliceLayout.getParent());
     res.erase(res.begin() + sliceLayout.getDim());
@@ -1033,6 +1057,86 @@ void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
 }
 
 //===----------------------------------------------------------------------===//
+// Generic Encoding
+//===----------------------------------------------------------------------===//
+
+Attribute GenericEncodingAttr::parse(AsmParser &parser, Type type) {
+  if (parser.parseLess().failed())
+    return {};
+  // Parse the data as a dictionary
+  DictionaryAttr dict;
+  if (parser.parseAttribute(dict).failed())
+    return {};
+  if (parser.parseGreater().failed())
+    return {};
+
+  SmallVector<unsigned> threadShape;
+  SmallVector<unsigned> threadStride;
+  SmallVector<unsigned> elemPerThread;
+  SmallVector<unsigned> elemStride;
+  SmallVector<unsigned> subGroupShape;
+  SmallVector<unsigned> order;
+  unsigned mmaFlag;
+
+  for (const NamedAttribute &attr : dict) {
+    if (attr.getName() == "threadShape") {
+      if (parseIntArrayAttr(parser, attr, threadShape,
+                            "shape of the thread layout")
+              .failed())
+        return {};
+    } else if (attr.getName() == "threadStride") {
+      if (parseIntArrayAttr(parser, attr, threadStride,
+                            "Interval between adjacent threads")
+              .failed())
+        return {};
+    } else if (attr.getName() == "elemPerThread") {
+      if (parseIntArrayAttr(parser, attr, elemPerThread,
+                            "the elements each thread needs to process")
+              .failed())
+        return {};
+    } else if (attr.getName() == "elemStride") {
+      if (parseIntArrayAttr(parser, attr, elemStride, 
+                            "Interval between adjacent elements")
+              .failed())
+        return {};
+    } else if (attr.getName() == "subGroupShape") {
+      if (parseIntArrayAttr(parser, attr, subGroupShape, 
+                            "shape of the subGroup layout")
+              .failed())
+        return {};
+    } else if (attr.getName() == "order") {
+      if (parseIntArrayAttr(parser, attr, order, "order").failed())
+        return {};
+    } else if (attr.getName() == "mmaFlag") {
+      if (parseIntAttrValue(parser, attr.getValue(), mmaFlag, 
+                            "Indicates whether the layout has been propagated")
+              .failed())
+        return 0;
+    } else {
+      parser.emitError(parser.getNameLoc(), "unexpected key: ")
+          << attr.getName().strref();
+      return {};
+    }
+  }
+
+  auto ret = parser.getChecked<GenericEncodingAttr>(
+      parser.getContext(), threadShape, threadStride, elemPerThread, elemStride, subGroupShape, order, mmaFlag);
+  return ret;
+}
+
+void GenericEncodingAttr::print(mlir::AsmPrinter &printer) const {
+  printer << "<{"
+          << "threadShape = [" << getThreadShape() << "]"
+          << ", threadStride = [" << getThreadStride() << "]"
+          << ", elemPerThread = [" << getElemPerThread() << "]"
+          << ", elemStride = [" << getElemStride() << "]"
+          << ", subGroupShape = [" << getSubGroupShape() << "]"
+          << ", order = [" << getOrder() << "]"
+          << ", mmaFlag = "<< getMmaFlag()
+          << "}>";
+}
+
+//===----------------------------------------------------------------------===//
 // MMA encoding
 //===----------------------------------------------------------------------===//
 
@@ -1418,6 +1522,9 @@ public:
     } else if (auto blockedAttr = attr.dyn_cast<BlockedEncodingAttr>()) {
       os << "blocked";
       return AliasResult::FinalAlias;
+    } else if (auto genericAttr = attr.dyn_cast<GenericEncodingAttr>()) {
+      os << "generic";
+      return AliasResult::FinalAlias;
     } /* else if (auto sliceAttr = attr.dyn_cast<SliceEncodingAttr>()) {
       os << "slice";
       return AliasResult::FinalAlias;
@@ -1433,8 +1540,10 @@ struct TritonGPUInferLayoutInterface
   LogicalResult
   inferReduceOpEncoding(Attribute operandEncoding, unsigned axis,
                         Attribute &resultEncoding) const override {
-    resultEncoding = SliceEncodingAttr::get(getDialect()->getContext(), axis,
-                                            operandEncoding);
+    // resultEncoding = SliceEncodingAttr::get(getDialect()->getContext(), axis,
+    //                                         operandEncoding);
+    auto genericEncoding = operandEncoding.dyn_cast<GenericEncodingAttr>();
+    resultEncoding = genericEncoding;
     return success();
   }
 
@@ -1460,14 +1569,16 @@ struct TritonGPUInferLayoutInterface
   inferExpandDimsOpEncoding(Attribute operandEncoding, unsigned axis,
                             Attribute &resultEncoding,
                             std::optional<Location> location) const override {
-    auto sliceEncoding = operandEncoding.dyn_cast<SliceEncodingAttr>();
-    if (!sliceEncoding)
-      return emitOptionalError(
-          location, "ExpandDimsOp operand encoding must be SliceEncodingAttr");
-    if (sliceEncoding.getDim() != axis)
-      return emitOptionalError(
-          location, "Incompatible slice dimension for ExpandDimsOp operand");
-    resultEncoding = sliceEncoding.getParent();
+    // auto sliceEncoding = operandEncoding.dyn_cast<SliceEncodingAttr>();
+    // if (!sliceEncoding)
+    //   return emitOptionalError(
+    //       location, "ExpandDimsOp operand encoding must be SliceEncodingAttr");
+    // if (sliceEncoding.getDim() != axis)
+    //   return emitOptionalError(
+    //       location, "Incompatible slice dimension for ExpandDimsOp operand");
+    // resultEncoding = sliceEncoding.getParent();
+    auto genericEncoding = operandEncoding.dyn_cast<GenericEncodingAttr>();
+    resultEncoding = genericEncoding;
     return success();
   }
 
@@ -1488,8 +1599,8 @@ struct TritonGPUInferLayoutInterface
                    operandEncoding.dyn_cast<DotOperandEncodingAttr>()) {
       if (opIdx != dotOpEnc.getOpIdx())
         return emitOptionalError(location, "Wrong opIdx");
-      if (retEncoding != dotOpEnc.getParent())
-        return emitOptionalError(location, "Incompatible parent encoding");
+      // if (retEncoding != dotOpEnc.getParent())
+      //   return emitOptionalError(location, "Incompatible parent encoding");
     } else
       return emitOptionalError(
           location, "Dot's a/b's encoding should be of DotOperandEncodingAttr");

@@ -40,7 +40,7 @@ foreach(v RANGE 7 17)
 endforeach()
 find_program(LLVM_CONFIG
     NAMES ${llvm_config_names}
-    PATHS ${LLVM_ROOT_DIR}/bin NO_DEFAULT_PATH
+    PATHS $ENV{LLVM_ROOT_DIR}/bin NO_DEFAULT_PATH
     DOC "Path to llvm-config tool.")
 find_program(LLVM_CONFIG NAMES ${llvm_config_names})
 if(APPLE)

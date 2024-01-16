@@ -28,13 +28,22 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
     //   - 1 element per thread
     //   - order = arange(rank)
     ArrayRef<int64_t> shape = tensorType.getShape();
-    int rank = shape.size();
-    llvm::SmallVector<unsigned> order(rank);
-    std::iota(order.begin(), order.end(), 0);
-    llvm::SmallVector<unsigned> sizePerThread(rank, 1);
-    Attribute encoding = triton::gpu::BlockedEncodingAttr::get(
-        this->context, shape, sizePerThread, order, this->numWarps,
-        this->threadsPerWarp, this->numCTAs);
+
+    const std::vector<unsigned int> threadShapeVec{32, 32};
+    const std::vector<unsigned int> threadStrideVec{1, 32};
+    const std::vector<unsigned int> elemPerThreadVec{1, 0};
+    const std::vector<unsigned int> elemStrideVec{0, 0};
+    const std::vector<unsigned int> subGroupShapeVec{1, 1};
+    const std::vector<unsigned int> orderVec{1, 0};
+
+    ArrayRef<unsigned int> threadShape(threadShapeVec);
+    ArrayRef<unsigned int> threadstride(threadStrideVec);
+    ArrayRef<unsigned int> elemPerThread(elemPerThreadVec);
+    ArrayRef<unsigned int> elemStride(elemStrideVec);
+    ArrayRef<unsigned int> subGroupShape(subGroupShapeVec);
+    ArrayRef<unsigned int> order(orderVec);
+    Attribute encoding = triton::gpu::GenericEncodingAttr::get(
+        this->context, threadShape, threadstride, elemPerThread, elemStride, subGroupShape, order, -1);
     return RankedTensorType::get(shape, tensorType.getElementType(), encoding);
   });
 

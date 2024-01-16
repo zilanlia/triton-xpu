@@ -450,6 +450,54 @@ for
 }
 
 //===----------------------------------------------------------------------===//
+// Generic Layout Encoding
+//===----------------------------------------------------------------------===//
+
+def GenericEncodingAttr : DistributedEncoding<"GenericEncoding"> {
+  let mnemonic = "generic";
+
+  let description = [{
+  #todo
+
+  #triton_gpu.generic_layout<{
+    threadShape
+    threadstride
+    elemPerThread
+    elemStride
+    subGroupShape
+    order
+  }>
+  }];
+
+  let parameters = (
+    ins
+    ArrayRefParameter<"unsigned">:$threadShape,
+    ArrayRefParameter<"unsigned">:$threadStride,
+    ArrayRefParameter<"unsigned">:$elemPerThread,
+    ArrayRefParameter<"unsigned">:$elemStride,
+    ArrayRefParameter<"unsigned">:$subGroupShape,
+    ArrayRefParameter<"unsigned">:$order,
+    "unsigned":$mmaFlag
+  );
+
+   let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = extraBaseClassDeclaration # [{
+      GenericEncodingAttr updatemmaFlag(unsigned mmaFlag) {
+        MLIRContext *ctx = getContext();
+        return GenericEncodingAttr::get(ctx, getThreadShape(), getThreadStride(), getElemPerThread(), 
+                                    getElemStride(), getSubGroupShape(), getOrder(), mmaFlag);
+      }
+
+      GenericEncodingAttr updateOrder(ArrayRef<unsigned> order) {
+        MLIRContext *ctx = getContext();
+        return GenericEncodingAttr::get(ctx, getThreadShape(), getThreadStride(), getElemPerThread(), 
+                                    getElemStride(), getSubGroupShape(), order, getMmaFlag());
+      }
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // MMA Layout Encoding
 //===----------------------------------------------------------------------===//
 // TODO: MMAv1 and MMAv2 should be two instances of the same class
